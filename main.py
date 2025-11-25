@@ -10,6 +10,7 @@ from pathlib import Path
 
 from src.ingestion_pipeline import CodeIngestionPipeline
 from src.rag.rag_system import CodeRAGSystem
+from src.rag.chat_interface import CodeChatInterface
 
 sys.path.insert(0, str(Path(__file__).parent / 'src'))
 
@@ -117,6 +118,130 @@ def analyze_function(function_name: str):
         rag.close()
 
 
+def show_graph_summary():
+    """Show summary of the code graph including relationships."""
+    print("Code Graph Summary")
+    print("="*60)
+
+    rag = CodeRAGSystem()
+
+    try:
+        summary = rag.neo4j.get_cross_file_relationships_summary()
+
+        print(f"\nNodes:")
+        print(f"  Files: {summary.get('total_files', 0)}")
+        print(f"  Functions: {summary.get('total_functions', 0)}")
+        print(f"  Classes: {summary.get('total_classes', 0)}")
+
+        print(f"\nRelationships:")
+        print(f"  Import relationships: {summary.get('import_relationships', 0)}")
+        print(f"  Function call relationships: {summary.get('call_relationships', 0)}")
+        print(f"  Uses relationships: {summary.get('uses_relationships', 0)}")
+
+        total_relationships = (summary.get('import_relationships', 0) +
+                             summary.get('call_relationships', 0) +
+                             summary.get('uses_relationships', 0))
+        print(f"  Total: {total_relationships}")
+
+    finally:
+        rag.close()
+
+
+def chat_mode(use_llm: bool = False):
+    """Start interactive chat mode with the RAG system."""
+    print("Code RAG Chat Interface")
+    print("="*60)
+
+    if use_llm:
+        print("🤖 LLM-enhanced mode (requires OPENAI_API_KEY)")
+    else:
+        print("💬 Basic chat mode (use --llm flag to enable AI responses)")
+
+    print("\nCommands:")
+    print("  Ask any question about your codebase")
+    print("  'function <name>' - Analyze a specific function")
+    print("  'file <path>' - Analyze a specific file")
+    print("  'similar <description>' - Find similar implementations")
+    print("  'history' - Show conversation history")
+    print("  'clear' - Clear conversation history")
+    print("  'exit' or 'quit' - Exit chat mode")
+    print()
+
+    chat = CodeChatInterface(use_llm=use_llm)
+
+    try:
+        while True:
+            try:
+                user_input = input("\n💬 You: ").strip()
+
+                if not user_input:
+                    continue
+
+                # Handle commands
+                if user_input.lower() in ['exit', 'quit']:
+                    print("Goodbye! 👋")
+                    break
+
+                elif user_input.lower() == 'history':
+                    history = chat.get_conversation_history()
+                    if not history:
+                        print("No conversation history yet.")
+                    else:
+                        print(f"\n📜 Conversation History ({len(history)} exchanges):")
+                        for i, entry in enumerate(history, 1):
+                            print(f"\n{i}. Q: {entry['query']}")
+                            print(f"   A: {entry['response'][:150]}...")
+                    continue
+
+                elif user_input.lower() == 'clear':
+                    chat.clear_history()
+                    print("✓ Conversation history cleared.")
+                    continue
+
+                elif user_input.lower().startswith('function '):
+                    func_name = user_input[9:].strip()
+                    result = chat.ask_about_function(func_name)
+                    print(f"\n🤖 Assistant:\n{result['answer']}")
+                    continue
+
+                elif user_input.lower().startswith('file '):
+                    file_path = user_input[5:].strip()
+                    result = chat.ask_about_file(file_path)
+                    print(f"\n🤖 Assistant:\n{result['answer']}")
+                    continue
+
+                elif user_input.lower().startswith('similar '):
+                    description = user_input[8:].strip()
+                    result = chat.find_similar_implementations(description)
+                    print(f"\n🤖 Assistant:\n{result['answer']}")
+                    continue
+
+                # Regular chat query
+                print("\n🔍 Searching codebase...")
+                result = chat.chat(user_input)
+
+                print(f"\n🤖 Assistant:\n{result['answer']}")
+
+                # Optionally show sources
+                if result['sources'] and len(result['sources']) > 0:
+                    show_sources = input("\nShow source files? (y/n): ").strip().lower()
+                    if show_sources == 'y':
+                        print("\n📚 Sources:")
+                        for i, source in enumerate(result['sources'][:3], 1):
+                            print(f"\n{i}. {source['file_path']}:{source['start_line']}")
+                            print(f"   {source['name']} ({source['code_type']})")
+
+            except KeyboardInterrupt:
+                print("\n\nExiting chat... 👋")
+                break
+            except Exception as e:
+                print(f"\n❌ Error: {e}")
+                print("Please try rephrasing your question.")
+
+    finally:
+        chat.close()
+
+
 def interactive_mode():
     """Interactive query mode."""
     print("Code Review Tool - Interactive Mode")
@@ -179,6 +304,13 @@ Examples:
   Ingest a repository:
     python main.py ingest /path/to/repo
 
+  Show graph summary (nodes and relationships):
+    python main.py summary
+
+  Chat with your codebase (recommended):
+    python main.py chat
+    python main.py chat --llm  # AI-powered responses
+
   Search for code:
     python main.py search "authentication function"
 
@@ -208,6 +340,11 @@ Examples:
     function_parser = subparsers.add_parser('function', help='Analyze function usage')
     function_parser.add_argument('name', help='Function name')
 
+    subparsers.add_parser('summary', help='Show graph summary with relationship statistics')
+
+    chat_parser = subparsers.add_parser('chat', help='Start conversational chat mode')
+    chat_parser.add_argument('--llm', action='store_true', help='Enable LLM for enhanced responses (requires OPENAI_API_KEY)')
+
     subparsers.add_parser('interactive', help='Start interactive mode')
 
     args = parser.parse_args()
@@ -228,6 +365,12 @@ Examples:
 
         elif args.command == 'function':
             analyze_function(args.name)
+
+        elif args.command == 'summary':
+            show_graph_summary()
+
+        elif args.command == 'chat':
+            chat_mode(use_llm=args.llm)
 
         elif args.command == 'interactive':
             interactive_mode()
