@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent / 'src'))
 
 
 
+#Method to ingest a repository
 def ingest_repository(repo_path: str, clear: bool = False):
     """Ingest a code repository."""
     print(f"Starting repository ingestion: {repo_path}")

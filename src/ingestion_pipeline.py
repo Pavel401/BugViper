@@ -18,9 +18,9 @@ class CodeIngestionPipeline:
         self.embeddings = embedding_handler or EmbeddingHandler()
 
         # Store metadata for second pass relationship creation
-        self.file_metadata = {}  # {file_path: {imports: [], function_calls: []}}
-        self.function_index = {}  # {function_name: [node_ids]}
-        self.class_index = {}  # {class_name: [node_ids]}
+        self.file_metadata = {} 
+        self.function_index = {} 
+        self.class_index = {} 
 
     def load_gitignore(self, repo_path: str) -> Optional[pathspec.PathSpec]:
         """Load .gitignore patterns if exists."""
