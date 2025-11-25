@@ -209,7 +209,8 @@ class CodeIngestionPipeline:
 
             rel_path = os.path.relpath(file_path, repo_root)
 
-            self.neo4j.create_file_node(rel_path, language)
+            # Create file node with repo_id
+            self.neo4j.create_file_node(rel_path, self.repo_id, language)
 
             extraction_result = self.ast_parser.extract_code_chunks(rel_path, tree, source_code)
             code_chunks = extraction_result['chunks']
@@ -225,7 +226,7 @@ class CodeIngestionPipeline:
 
             for chunk in code_chunks:
                 if chunk['type'] == 'function':
-                    node_id = self.neo4j.create_function_node(rel_path, chunk)
+                    node_id = self.neo4j.create_function_node(rel_path, self.repo_id, chunk)
                     stats['functions'] += 1
 
                     # Index function by name for cross-file references
@@ -240,7 +241,7 @@ class CodeIngestionPipeline:
                         })
 
                 elif chunk['type'] == 'class':
-                    node_id = self.neo4j.create_class_node(rel_path, chunk)
+                    node_id = self.neo4j.create_class_node(rel_path, self.repo_id, chunk)
                     stats['classes'] += 1
 
                     # Index class by name for cross-file references
@@ -255,10 +256,11 @@ class CodeIngestionPipeline:
                         })
 
                 elif chunk['type'] == 'code_block':
-                    node_id = self.neo4j.create_code_block_node(rel_path, chunk)
+                    node_id = self.neo4j.create_code_block_node(rel_path, self.repo_id, chunk)
                     stats['code_blocks'] += 1
 
-            embedding_ids = self.embeddings.insert_batch(code_chunks)
+            # Insert embeddings with user_id and repo_id for multi-tenancy
+            embedding_ids = self.embeddings.insert_batch(code_chunks, self.user_id, self.repo_id)
             stats['embeddings'] = len(embedding_ids)
 
             print(f"✓ Ingested {rel_path}: {stats['functions']} functions, "
@@ -269,10 +271,16 @@ class CodeIngestionPipeline:
 
         return stats
 
-    def ingest_repository(self, repo_path: str, clear_existing: bool = False):
-        """Ingest entire repository into Neo4j and Milvus."""
+    def ingest_repository(self, repo_path: str, user_id: str, repo_id: str,
+                         username: str = None, repo_name: str = None,
+                         repo_url: str = None, clear_existing: bool = False):
+        """Ingest entire repository into Neo4j and Milvus with multi-tenant support."""
         if not os.path.exists(repo_path):
             raise ValueError(f"Repository path does not exist: {repo_path}")
+
+        # Use defaults if not provided
+        username = username or user_id
+        repo_name = repo_name or os.path.basename(os.path.abspath(repo_path))
 
         if clear_existing:
             print("Clearing existing data...")
@@ -282,9 +290,20 @@ class CodeIngestionPipeline:
         print("Creating Neo4j schema...")
         self.neo4j.create_schema()
 
+        # Create User and Repository nodes
+        print(f"Creating User node: {user_id}")
+        self.neo4j.create_user_node(user_id, username)
+
+        print(f"Creating Repository node: {repo_id}")
+        self.neo4j.create_repository_node(repo_id, user_id, repo_name, repo_url)
+
         print(f"Scanning repository: {repo_path}")
         files = self.get_repository_files(repo_path)
         print(f"Found {len(files)} code files to process")
+
+        # Store user_id and repo_id for use in file processing
+        self.user_id = user_id
+        self.repo_id = repo_id
 
         total_stats = {
             'files': 0,
