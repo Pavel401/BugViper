@@ -219,3 +219,109 @@ class Neo4jHandler:
         with self.driver.session() as session:
             result = session.run(query, {'name': name})
             return [dict(record['c']) for record in result]
+
+    def create_uses_relationship(self, source_id: str, target_id: str, source_type: str = 'Function', target_type: str = 'Function'):
+        """Create a USES relationship between code entities."""
+        query = f"""
+        MATCH (source:{source_type} {{id: $source_id}})
+        MATCH (target:{target_type} {{id: $target_id}})
+        MERGE (source)-[:USES]->(target)
+        """
+        with self.driver.session() as session:
+            session.run(query, {'source_id': source_id, 'target_id': target_id})
+
+    def get_function_dependencies(self, function_id: str) -> Dict[str, Any]:
+        """Get all dependencies for a function (what it calls, imports, etc)."""
+        query = """
+        MATCH (fn:Function {id: $function_id})
+        OPTIONAL MATCH (fn)-[:CALLS]->(called:Function)
+        OPTIONAL MATCH (fn)-[:USES]->(used)
+        OPTIONAL MATCH (file:File)-[:CONTAINS]->(fn)
+        OPTIONAL MATCH (file)-[:IMPORTS]->(module:Module)
+        RETURN fn,
+               collect(DISTINCT called) as called_functions,
+               collect(DISTINCT used) as used_entities,
+               collect(DISTINCT module) as imported_modules,
+               file
+        """
+        with self.driver.session() as session:
+            result = session.run(query, {'function_id': function_id})
+            record = result.single()
+            if record:
+                return {
+                    'function': dict(record['fn']),
+                    'file': dict(record['file']) if record['file'] else None,
+                    'calls': [dict(f) for f in record['called_functions'] if f],
+                    'uses': [dict(u) for u in record['used_entities'] if u],
+                    'imports': [dict(m) for m in record['imported_modules'] if m]
+                }
+            return {}
+
+    def get_function_dependents(self, function_id: str) -> Dict[str, Any]:
+        """Get all code that depends on this function (what calls it, etc)."""
+        query = """
+        MATCH (fn:Function {id: $function_id})
+        OPTIONAL MATCH (caller:Function)-[:CALLS]->(fn)
+        OPTIONAL MATCH (user)-[:USES]->(fn)
+        RETURN fn,
+               collect(DISTINCT caller) as calling_functions,
+               collect(DISTINCT user) as using_entities
+        """
+        with self.driver.session() as session:
+            result = session.run(query, {'function_id': function_id})
+            record = result.single()
+            if record:
+                return {
+                    'function': dict(record['fn']),
+                    'called_by': [dict(f) for f in record['calling_functions'] if f],
+                    'used_by': [dict(u) for u in record['using_entities'] if u]
+                }
+            return {}
+
+    def get_file_dependencies(self, file_path: str) -> Dict[str, Any]:
+        """Get all dependencies for a file."""
+        query = """
+        MATCH (f:File {path: $file_path})
+        OPTIONAL MATCH (f)-[:IMPORTS]->(module:Module)
+        OPTIONAL MATCH (f)-[:CONTAINS]->(entity)
+        OPTIONAL MATCH (entity)-[:CALLS|USES]->(external)
+        OPTIONAL MATCH (external_file:File)-[:CONTAINS]->(external)
+        WHERE external_file.path <> f.path
+        RETURN f,
+               collect(DISTINCT module) as imported_modules,
+               collect(DISTINCT entity) as internal_entities,
+               collect(DISTINCT external) as external_dependencies,
+               collect(DISTINCT external_file) as dependent_files
+        """
+        with self.driver.session() as session:
+            result = session.run(query, {'file_path': file_path})
+            record = result.single()
+            if record:
+                return {
+                    'file': dict(record['f']),
+                    'imports': [dict(m) for m in record['imported_modules'] if m],
+                    'entities': [dict(e) for e in record['internal_entities'] if e],
+                    'external_deps': [dict(e) for e in record['external_dependencies'] if e],
+                    'dependent_files': [dict(f) for f in record['dependent_files'] if f]
+                }
+            return {}
+
+    def get_cross_file_relationships_summary(self) -> Dict[str, int]:
+        """Get a summary of all cross-file relationships."""
+        queries = {
+            'total_files': "MATCH (f:File) RETURN count(f) as count",
+            'total_functions': "MATCH (fn:Function) RETURN count(fn) as count",
+            'total_classes': "MATCH (c:Class) RETURN count(c) as count",
+            'import_relationships': "MATCH ()-[r:IMPORTS]->() RETURN count(r) as count",
+            'call_relationships': "MATCH ()-[r:CALLS]->() RETURN count(r) as count",
+            'uses_relationships': "MATCH ()-[r:USES]->() RETURN count(r) as count",
+        }
+
+        summary = {}
+        with self.driver.session() as session:
+            for key, query in queries.items():
+                result = session.run(query)
+                record = result.single()
+                summary[key] = record['count'] if record else 0
+
+        return summary

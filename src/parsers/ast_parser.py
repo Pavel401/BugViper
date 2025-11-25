@@ -108,7 +108,8 @@ class ASTParser:
             'functions': [],
             'classes': [],
             'variables': [],
-            'imports': []
+            'imports': [],
+            'function_calls': []
         }
 
         def traverse(node: tree_sitter.Node):
@@ -146,6 +147,25 @@ class ASTParser:
                             'text': source_code[node.start_byte:node.end_byte].decode('utf-8', errors='ignore')
                         })
 
+                elif node.type in ['import_statement', 'import_from_statement']:
+                    # Extract import information
+                    import_text = source_code[node.start_byte:node.end_byte].decode('utf-8', errors='ignore')
+                    definitions['imports'].append({
+                        'type': node.type,
+                        'text': import_text,
+                        'line': node.start_point[0]
+                    })
+
+                elif node.type == 'call':
+                    # Extract function calls
+                    func_node = node.child_by_field_name('function')
+                    if func_node:
+                        func_name = source_code[func_node.start_byte:func_node.end_byte].decode('utf-8', errors='ignore')
+                        definitions['function_calls'].append({
+                            'name': func_name,
+                            'line': node.start_point[0]
+                        })
+
             elif language in ['javascript', 'typescript', 'tsx']:
                 if node.type in ['function_declaration', 'method_definition']:
                     name_node = None
@@ -175,6 +195,23 @@ class ASTParser:
                             'start_line': node.start_point[0],
                             'end_line': node.end_point[0],
                             'text': source_code[node.start_byte:node.end_byte].decode('utf-8', errors='ignore')
+                        })
+
+                elif node.type == 'import_statement':
+                    import_text = source_code[node.start_byte:node.end_byte].decode('utf-8', errors='ignore')
+                    definitions['imports'].append({
+                        'type': node.type,
+                        'text': import_text,
+                        'line': node.start_point[0]
+                    })
+
+                elif node.type == 'call_expression':
+                    func_node = node.child_by_field_name('function')
+                    if func_node:
+                        func_name = source_code[func_node.start_byte:func_node.end_byte].decode('utf-8', errors='ignore')
+                        definitions['function_calls'].append({
+                            'name': func_name,
+                            'line': node.start_point[0]
                         })
 
             elif language == 'java':
@@ -208,6 +245,23 @@ class ASTParser:
                             'text': source_code[node.start_byte:node.end_byte].decode('utf-8', errors='ignore')
                         })
 
+                elif node.type == 'import_declaration':
+                    import_text = source_code[node.start_byte:node.end_byte].decode('utf-8', errors='ignore')
+                    definitions['imports'].append({
+                        'type': node.type,
+                        'text': import_text,
+                        'line': node.start_point[0]
+                    })
+
+                elif node.type == 'method_invocation':
+                    name_node = node.child_by_field_name('name')
+                    if name_node:
+                        func_name = source_code[name_node.start_byte:name_node.end_byte].decode('utf-8', errors='ignore')
+                        definitions['function_calls'].append({
+                            'name': func_name,
+                            'line': node.start_point[0]
+                        })
+
             elif language == 'go':
                 if node.type == 'function_declaration':
                     name_node = None
@@ -222,6 +276,23 @@ class ASTParser:
                             'start_line': node.start_point[0],
                             'end_line': node.end_point[0],
                             'text': source_code[node.start_byte:node.end_byte].decode('utf-8', errors='ignore')
+                        })
+
+                elif node.type == 'import_declaration':
+                    import_text = source_code[node.start_byte:node.end_byte].decode('utf-8', errors='ignore')
+                    definitions['imports'].append({
+                        'type': node.type,
+                        'text': import_text,
+                        'line': node.start_point[0]
+                    })
+
+                elif node.type == 'call_expression':
+                    func_node = node.child_by_field_name('function')
+                    if func_node:
+                        func_name = source_code[func_node.start_byte:func_node.end_byte].decode('utf-8', errors='ignore')
+                        definitions['function_calls'].append({
+                            'name': func_name,
+                            'line': node.start_point[0]
                         })
 
             # Recursively traverse children
@@ -268,8 +339,8 @@ class ASTParser:
         return queries
 
     def extract_code_chunks(self, file_path: str, tree: tree_sitter.Tree, source_code: bytes,
-                           chunk_size: int = 500) -> List[Dict[str, Any]]:
-        """Extract code chunks for embedding generation."""
+                           chunk_size: int = 500) -> Dict[str, Any]:
+        """Extract code chunks for embedding generation and relationship data."""
         chunks = []
         language = self.get_language_from_extension(file_path)
 
@@ -346,4 +417,8 @@ class ASTParser:
                 'language': language
             })
 
-        return chunks
+        return {
+            'chunks': chunks,
+            'imports': definitions['imports'],
+            'function_calls': definitions['function_calls']
+        }
