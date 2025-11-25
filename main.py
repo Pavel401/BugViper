@@ -17,15 +17,25 @@ sys.path.insert(0, str(Path(__file__).parent / 'src'))
 
 
 #Method to ingest a repository
-def ingest_repository(repo_path: str, clear: bool = False):
-    """Ingest a code repository."""
+def ingest_repository(repo_path: str, user_id: str, repo_id: str,
+                     username: str = None, repo_name: str = None,
+                     repo_url: str = None, clear: bool = False):
+    """Ingest a code repository with multi-tenant support."""
     print(f"Starting repository ingestion: {repo_path}")
     print("="*60)
 
     pipeline = CodeIngestionPipeline()
 
     try:
-        stats = pipeline.ingest_repository(repo_path, clear_existing=clear)
+        stats = pipeline.ingest_repository(
+            repo_path=repo_path,
+            user_id=user_id,
+            repo_id=repo_id,
+            username=username,
+            repo_name=repo_name,
+            repo_url=repo_url,
+            clear_existing=clear
+        )
         print("\nRepository successfully ingested!")
         return stats
     except Exception as e:
@@ -302,8 +312,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  Ingest a repository:
-    python main.py ingest /path/to/repo
+  Ingest a repository (multi-tenant):
+    python main.py ingest /path/to/repo --user-id user123 --repo-id repo456
+    python main.py ingest /path/to/repo --user-id alice --repo-id myproject --repo-name "My Project"
 
   Show graph summary (nodes and relationships):
     python main.py summary
@@ -327,6 +338,11 @@ Examples:
 
     ingest_parser = subparsers.add_parser('ingest', help='Ingest a code repository')
     ingest_parser.add_argument('repo_path', help='Path to the repository')
+    ingest_parser.add_argument('--user-id', required=True, help='User ID (owner of the repository)')
+    ingest_parser.add_argument('--repo-id', required=True, help='Repository ID (unique identifier)')
+    ingest_parser.add_argument('--username', help='Username (defaults to user-id)')
+    ingest_parser.add_argument('--repo-name', help='Repository name (defaults to directory name)')
+    ingest_parser.add_argument('--repo-url', help='Repository URL (optional)')
     ingest_parser.add_argument('--clear', action='store_true', help='Clear existing data before ingestion')
 
     search_parser = subparsers.add_parser('search', help='Search for code')
@@ -356,7 +372,15 @@ Examples:
 
     try:
         if args.command == 'ingest':
-            ingest_repository(args.repo_path, clear=args.clear)
+            ingest_repository(
+                repo_path=args.repo_path,
+                user_id=args.user_id,
+                repo_id=args.repo_id,
+                username=args.username,
+                repo_name=args.repo_name,
+                repo_url=args.repo_url,
+                clear=args.clear
+            )
 
         elif args.command == 'search':
             search_code(args.query, top_k=args.top_k, language=args.language)
