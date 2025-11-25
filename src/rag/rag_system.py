@@ -9,17 +9,31 @@ load_dotenv()
 
 
 class CodeRAGSystem:
-    """RAG system for code review and query."""
+    """Multi-tenant RAG system for code review and query."""
 
     def __init__(self, neo4j_handler: Neo4jHandler = None,
-                 embedding_handler: EmbeddingHandler = None):
+                 embedding_handler: EmbeddingHandler = None,
+                 user_id: str = None, repo_id: str = None):
         self.neo4j = neo4j_handler or Neo4jHandler()
         self.embeddings = embedding_handler or EmbeddingHandler()
+        # Default user/repo context for multi-tenancy
+        self.user_id = user_id
+        self.repo_id = repo_id
 
-    def semantic_search(self, query: str, top_k: int = 5,
-                       filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-        """Perform semantic search over code chunks."""
-        results = self.embeddings.search_similar_code(query, top_k=top_k, filters=filters)
+    def semantic_search(self, query: str, user_id: str = None, repo_id: str = None,
+                       top_k: int = 5, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """Perform semantic search over code chunks with multi-tenant filtering."""
+        # Use provided user_id/repo_id or fall back to instance defaults
+        user_id = user_id or self.user_id
+        repo_id = repo_id or self.repo_id
+
+        results = self.embeddings.search_similar_code(
+            query=query,
+            user_id=user_id,
+            repo_id=repo_id,
+            top_k=top_k,
+            filters=filters
+        )
         return results
 
     def graph_search(self, entity_name: str, entity_type: str = 'function') -> List[Dict[str, Any]]:
