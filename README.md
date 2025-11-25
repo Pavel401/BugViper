@@ -4,8 +4,9 @@ A powerful code review and analysis tool that combines Abstract Syntax Tree (AST
 
 ## Features
 
-- **🤖 Conversational Chat**: Ask questions about your codebase in natural language
-- **🔗 Cross-File Relationships**: Full dependency tracking with interconnected code graph
+- **Conversational Chat**: Ask questions about your codebase in natural language
+- **Multi-Tenant Support**: Manage multiple repositories with user and repository isolation
+- **Cross-File Relationships**: Full dependency tracking with interconnected code graph
 - **AST Parsing**: Uses Tree-sitter to parse code from multiple languages (Python, JavaScript, TypeScript, Java, Go)
 - **Graph Database**: Stores code structure and relationships in Neo4j with IMPORTS, CALLS, and USES relationships
 - **Semantic Search**: Leverages Milvus vector database for embedding-based code search
@@ -55,16 +56,16 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env with your database credentials
 
-# 3. Ingest your codebase
-python main.py ingest /path/to/your/repo --clear
+# 3. Ingest your codebase (multi-tenant support)
+python main.py ingest /path/to/your/repo --user-id myuser --repo-id myproject --clear
 
-# 4. Start chatting with your code! 🚀
+# 4. Start chatting with your code
 python main.py chat
 
-💬 You: How does authentication work?
-💬 You: What files depend on auth.py?
-💬 You: function login
-💬 You: Show me all database queries
+You: How does authentication work?
+You: What files depend on auth.py?
+You: function login
+You: Show me all database queries
 ```
 
 ## Prerequisites
@@ -125,12 +126,22 @@ python main.py chat
 Ingest a code repository into the graph and vector databases:
 
 ```bash
-python main.py ingest /path/to/your/repository
+python main.py ingest /Users/skmabudalam/Desktop/graphrag --user-id Mabud --repo-id mabud401alam
 ```
 
-With clear existing data:
+With optional metadata:
 ```bash
-python main.py ingest /path/to/your/repository --clear
+python main.py ingest /path/to/your/repository \
+  --user-id myuser \
+  --repo-id myproject \
+  --username "John Doe" \
+  --repo-name "My Project" \
+  --repo-url "https://github.com/user/repo"
+```
+
+Clear existing data before ingestion:
+```bash
+python main.py ingest /path/to/your/repository --user-id myuser --repo-id myproject --clear
 ```
 
 ### 2. Search for Code
@@ -167,7 +178,7 @@ Find where and how a function is used:
 python main.py function login
 ```
 
-### 5. Chat with Your Codebase (Recommended! 🚀)
+### 5. Chat with Your Codebase
 
 Have conversational interactions with your codebase:
 
@@ -180,11 +191,9 @@ python main.py chat
 ```bash
 $ python main.py chat
 
-💬 You: How does authentication work in this codebase?
+You: How does authentication work in this codebase?
 
-🔍 Searching codebase...
-
-🤖 Assistant:
+Searching codebase...
 I found 5 relevant code sections related to your query:
 
 1. **authenticate_user** (function) in `src/auth/handler.py`
@@ -214,18 +223,17 @@ python main.py chat --llm
 
 **Ask Natural Questions:**
 ```
-💬 You: How does user authentication work?
-💬 You: Where is error handling implemented?
-💬 You: Show me database query functions
-💬 You: What happens when a user logs in?
-💬 You: Find all API endpoints
+You: How does user authentication work?
+You: Where is error handling implemented?
+You: Show me database query functions
+You: What happens when a user logs in?
+You: Find all API endpoints
 ```
 
 **Analyze Specific Function:**
 ```
-💬 You: function authenticate_user
+You: function authenticate_user
 
-🤖 Assistant:
 **Function: authenticate_user**
 Location: `src/auth/handler.py:authenticate_user:45`
 Lines: 45 - 78
@@ -247,9 +255,8 @@ File imports 8 modules:
 
 **Analyze Specific File:**
 ```
-💬 You: file src/auth/handler.py
+You: file src/auth/handler.py
 
-🤖 Assistant:
 **File: src/auth/handler.py**
 Language: python
 
@@ -271,9 +278,8 @@ Depends on 3 other files:
 
 **Find Similar Implementations:**
 ```
-💬 You: similar password validation logic
+You: similar password validation logic
 
-🤖 Assistant:
 I found 4 similar implementations:
 
 1. **validate_password** in `src/auth/validator.py`
@@ -427,9 +433,17 @@ chat.close()
 from src.ingestion_pipeline import CodeIngestionPipeline
 from src.rag.rag_system import CodeRAGSystem
 
-# Ingest a repository (two-pass: nodes + relationships)
+# Ingest a repository (multi-tenant, two-pass: nodes + relationships)
 pipeline = CodeIngestionPipeline()
-stats = pipeline.ingest_repository('/path/to/repo', clear_existing=True)
+stats = pipeline.ingest_repository(
+    repo_path='/path/to/repo',
+    user_id='user123',
+    repo_id='myproject',
+    username='John Doe',
+    repo_name='My Project',
+    repo_url='https://github.com/user/repo',
+    clear_existing=True
+)
 print(f"Created {stats['import_relationships']} import relationships")
 print(f"Created {stats['call_relationships']} call relationships")
 pipeline.close()
@@ -479,28 +493,51 @@ neo4j.close()
 
 ## Supported Languages
 
-| Language   | Extension | Status |
-|------------|-----------|--------|
-| Python     | .py       | ✅     |
-| JavaScript | .js       | ✅     |
-| TypeScript | .ts, .tsx | ✅     |
-| Java       | .java     | ✅     |
-| Go         | .go       | ✅     |
+| Language   | Extension | Status     |
+|------------|-----------|------------|
+| Python     | .py       | Supported  |
+| JavaScript | .js       | Supported  |
+| TypeScript | .ts, .tsx | Supported  |
+| Java       | .java     | Supported  |
+| Go         | .go       | Supported  |
 
 ## Use Cases
 
-1. **💬 Conversational Code Exploration**: Ask natural language questions about your codebase
-2. **🔍 Semantic Code Search**: Find functionality by describing what it does, not just keywords
-3. **🔗 Dependency Analysis**: Understand cross-file relationships, imports, and function calls
-4. **💥 Impact Analysis**: See what breaks when you change a function or class
-5. **🔄 Duplication Detection**: Find similar implementations and consolidation opportunities
-6. **📊 Code Quality Insights**: Identify highly coupled code, unused functions, circular dependencies
-7. **🎯 Code Review**: Get suggestions based on similar patterns in your codebase
-8. **🗺️ Code Navigation**: Explore relationships between files, functions, and classes
-9. **📈 Pattern Discovery**: Find common patterns and best practices across your codebase
-10. **🚨 Refactoring Safety**: Identify all usages before making changes
+1. **Conversational Code Exploration**: Ask natural language questions about your codebase
+2. **Semantic Code Search**: Find functionality by describing what it does, not just keywords
+3. **Dependency Analysis**: Understand cross-file relationships, imports, and function calls
+4. **Impact Analysis**: See what breaks when you change a function or class
+5. **Duplication Detection**: Find similar implementations and consolidation opportunities
+6. **Code Quality Insights**: Identify highly coupled code, unused functions, circular dependencies
+7. **Code Review**: Get suggestions based on similar patterns in your codebase
+8. **Code Navigation**: Explore relationships between files, functions, and classes
+9. **Pattern Discovery**: Find common patterns and best practices across your codebase
+10. **Refactoring Safety**: Identify all usages before making changes
+11. **Multi-Repository Management**: Track and analyze multiple codebases with user isolation
 
 ## Advanced Configuration
+
+### Multi-Tenant Support
+
+The system supports managing multiple repositories for different users:
+
+```bash
+# Ingest repositories for different users
+python main.py ingest /path/to/alice/project --user-id alice --repo-id project1
+python main.py ingest /path/to/bob/project --user-id bob --repo-id project2
+
+# Each repository is isolated by user_id and repo_id
+# This allows multiple users to use the same system without conflicts
+```
+
+**Required Parameters:**
+- `--user-id`: Unique identifier for the repository owner
+- `--repo-id`: Unique identifier for the repository
+
+**Optional Parameters:**
+- `--username`: Display name for the user (defaults to user_id)
+- `--repo-name`: Display name for the repository (defaults to directory name)
+- `--repo-url`: URL of the repository (e.g., GitHub URL)
 
 ### Custom Embedding Model
 
@@ -606,8 +643,9 @@ Both modes combine:
 
 Contributions are welcome! Areas for improvement:
 
-- ✅ ~~Add cross-file relationship tracking~~ (Done!)
-- ✅ ~~Add conversational chat interface~~ (Done!)
+- Add cross-file relationship tracking (Done!)
+- Add conversational chat interface (Done!)
+- Add multi-tenant support (Done!)
 - Add more programming languages (Rust, C++, Ruby, etc.)
 - Add code complexity metrics
 - Create web UI for visualization
