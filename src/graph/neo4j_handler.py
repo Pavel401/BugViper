@@ -21,31 +21,89 @@ class Neo4jHandler:
             self.driver.close()
 
     def create_schema(self):
-        """Create schema constraints and indexes for the code graph."""
+        """Create schema constraints and indexes for the multi-tenant code graph."""
         with self.driver.session() as session:
-            session.run("CREATE CONSTRAINT file_path IF NOT EXISTS FOR (f:File) REQUIRE f.path IS UNIQUE")
+            # User and Repository constraints
+            session.run("CREATE CONSTRAINT user_id IF NOT EXISTS FOR (u:User) REQUIRE u.id IS UNIQUE")
+            session.run("CREATE CONSTRAINT repo_composite IF NOT EXISTS FOR (r:Repository) REQUIRE (r.user_id, r.id) IS UNIQUE")
+
+            # File, Function, Class constraints with repo_id for multi-tenancy
+            session.run("CREATE CONSTRAINT file_path_repo IF NOT EXISTS FOR (f:File) REQUIRE (f.repo_id, f.path) IS UNIQUE")
             session.run("CREATE CONSTRAINT function_id IF NOT EXISTS FOR (fn:Function) REQUIRE fn.id IS UNIQUE")
             session.run("CREATE CONSTRAINT class_id IF NOT EXISTS FOR (c:Class) REQUIRE c.id IS UNIQUE")
+
+            # Performance indexes
+            session.run("CREATE INDEX user_email IF NOT EXISTS FOR (u:User) ON (u.email)")
+            session.run("CREATE INDEX repo_id IF NOT EXISTS FOR (r:Repository) ON (r.id)")
+            session.run("CREATE INDEX repo_name IF NOT EXISTS FOR (r:Repository) ON (r.name)")
+            session.run("CREATE INDEX file_repo IF NOT EXISTS FOR (f:File) ON (f.repo_id)")
             session.run("CREATE INDEX file_name IF NOT EXISTS FOR (f:File) ON (f.name)")
+            session.run("CREATE INDEX function_repo IF NOT EXISTS FOR (fn:Function) ON (fn.repo_id)")
             session.run("CREATE INDEX function_name IF NOT EXISTS FOR (fn:Function) ON (fn.name)")
+            session.run("CREATE INDEX class_repo IF NOT EXISTS FOR (c:Class) ON (c.repo_id)")
             session.run("CREATE INDEX class_name IF NOT EXISTS FOR (c:Class) ON (c.name)")
+            session.run("CREATE INDEX codeblock_repo IF NOT EXISTS FOR (cb:CodeBlock) ON (cb.repo_id)")
 
     def clear_database(self):
         """Clear all nodes and relationships from the database."""
         with self.driver.session() as session:
             session.run("MATCH (n) DETACH DELETE n")
 
-    def create_file_node(self, file_path: str, language: str, metadata: Dict = None) -> str:
-        """Create a File node in the graph."""
+    def create_user_node(self, user_id: str, username: str, email: str = None, metadata: Dict = None) -> str:
+        """Create or update a User node."""
         query = """
-        MERGE (f:File {path: $path})
+        MERGE (u:User {id: $user_id})
+        SET u.username = $username,
+            u.email = $email,
+            u.updated_at = datetime()
+        SET u.created_at = coalesce(u.created_at, datetime())
+        RETURN u.id as id
+        """
+        with self.driver.session() as session:
+            result = session.run(query, {
+                'user_id': user_id,
+                'username': username,
+                'email': email or f"{user_id}@example.com"
+            })
+            record = result.single()
+            return record['id'] if record else None
+
+    def create_repository_node(self, repo_id: str, user_id: str, name: str, url: str = None, metadata: Dict = None) -> str:
+        """Create or update a Repository node and link it to a User."""
+        query = """
+        MATCH (u:User {id: $user_id})
+        MERGE (r:Repository {user_id: $user_id, id: $repo_id})
+        SET r.name = $name,
+            r.url = $url,
+            r.updated_at = datetime()
+        SET r.created_at = coalesce(r.created_at, datetime())
+        MERGE (u)-[:OWNS]->(r)
+        RETURN r.id as id
+        """
+        with self.driver.session() as session:
+            result = session.run(query, {
+                'user_id': user_id,
+                'repo_id': repo_id,
+                'name': name,
+                'url': url or ''
+            })
+            record = result.single()
+            return record['id'] if record else None
+
+    def create_file_node(self, file_path: str, repo_id: str, language: str, metadata: Dict = None) -> str:
+        """Create a File node in the graph and link to Repository."""
+        query = """
+        MATCH (r:Repository {id: $repo_id})
+        MERGE (f:File {repo_id: $repo_id, path: $path})
         SET f.language = $language,
             f.name = $name,
             f.extension = $extension
+        MERGE (r)-[:CONTAINS]->(f)
         RETURN f.path as path
         """
         with self.driver.session() as session:
             result = session.run(query, {
+                'repo_id': repo_id,
                 'path': file_path,
                 'language': language,
                 'name': os.path.basename(file_path),
@@ -54,12 +112,14 @@ class Neo4jHandler:
             record = result.single()
             return record['path'] if record else None
 
-    def create_function_node(self, file_path: str, function_data: Dict) -> str:
+    def create_function_node(self, file_path: str, repo_id: str, function_data: Dict) -> str:
         """Create a Function node and link it to a File."""
         query = """
-        MATCH (f:File {path: $file_path})
+        MATCH (f:File {repo_id: $repo_id, path: $file_path})
         MERGE (fn:Function {id: $function_id})
         SET fn.name = $name,
+            fn.repo_id = $repo_id,
+            fn.file_path = $file_path,
             fn.start_line = $start_line,
             fn.end_line = $end_line,
             fn.content = $content,
@@ -67,10 +127,11 @@ class Neo4jHandler:
         MERGE (f)-[:CONTAINS]->(fn)
         RETURN fn.id as id
         """
-        function_id = f"{file_path}:{function_data.get('name', 'unknown')}:{function_data['start_line']}"
+        function_id = f"{repo_id}:{file_path}:{function_data.get('name', 'unknown')}:{function_data['start_line']}"
 
         with self.driver.session() as session:
             result = session.run(query, {
+                'repo_id': repo_id,
                 'file_path': file_path,
                 'function_id': function_id,
                 'name': function_data.get('name', ''),
@@ -82,12 +143,14 @@ class Neo4jHandler:
             record = result.single()
             return record['id'] if record else None
 
-    def create_class_node(self, file_path: str, class_data: Dict) -> str:
+    def create_class_node(self, file_path: str, repo_id: str, class_data: Dict) -> str:
         """Create a Class node and link it to a File."""
         query = """
-        MATCH (f:File {path: $file_path})
+        MATCH (f:File {repo_id: $repo_id, path: $file_path})
         MERGE (c:Class {id: $class_id})
         SET c.name = $name,
+            c.repo_id = $repo_id,
+            c.file_path = $file_path,
             c.start_line = $start_line,
             c.end_line = $end_line,
             c.content = $content,
@@ -95,10 +158,11 @@ class Neo4jHandler:
         MERGE (f)-[:CONTAINS]->(c)
         RETURN c.id as id
         """
-        class_id = f"{file_path}:{class_data.get('name', 'unknown')}:{class_data['start_line']}"
+        class_id = f"{repo_id}:{file_path}:{class_data.get('name', 'unknown')}:{class_data['start_line']}"
 
         with self.driver.session() as session:
             result = session.run(query, {
+                'repo_id': repo_id,
                 'file_path': file_path,
                 'class_id': class_id,
                 'name': class_data.get('name', ''),
@@ -110,12 +174,14 @@ class Neo4jHandler:
             record = result.single()
             return record['id'] if record else None
 
-    def create_code_block_node(self, file_path: str, block_data: Dict) -> str:
+    def create_code_block_node(self, file_path: str, repo_id: str, block_data: Dict) -> str:
         """Create a CodeBlock node for general code chunks."""
         query = """
-        MATCH (f:File {path: $file_path})
+        MATCH (f:File {repo_id: $repo_id, path: $file_path})
         MERGE (cb:CodeBlock {id: $block_id})
         SET cb.name = $name,
+            cb.repo_id = $repo_id,
+            cb.file_path = $file_path,
             cb.start_line = $start_line,
             cb.end_line = $end_line,
             cb.content = $content,
@@ -124,10 +190,11 @@ class Neo4jHandler:
         MERGE (f)-[:CONTAINS]->(cb)
         RETURN cb.id as id
         """
-        block_id = f"{file_path}:block:{block_data['start_line']}"
+        block_id = f"{repo_id}:{file_path}:block:{block_data['start_line']}"
 
         with self.driver.session() as session:
             result = session.run(query, {
+                'repo_id': repo_id,
                 'file_path': file_path,
                 'block_id': block_id,
                 'name': block_data.get('name', ''),
