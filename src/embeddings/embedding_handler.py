@@ -69,10 +69,14 @@ class EmbeddingHandler:
             raise
 
     def _create_collection(self):
-        """Create a new Milvus collection for code embeddings."""
+        """Create a new Milvus collection for multi-tenant code embeddings."""
         fields = [
             FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, max_length=512),
             FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=self.embedding_dim),
+            # Multi-tenancy fields
+            FieldSchema(name="user_id", dtype=DataType.VARCHAR, max_length=256),
+            FieldSchema(name="repo_id", dtype=DataType.VARCHAR, max_length=256),
+            # Code metadata fields
             FieldSchema(name="file_path", dtype=DataType.VARCHAR, max_length=512),
             FieldSchema(name="code_type", dtype=DataType.VARCHAR, max_length=50),
             FieldSchema(name="name", dtype=DataType.VARCHAR, max_length=256),
@@ -82,9 +86,10 @@ class EmbeddingHandler:
             FieldSchema(name="content", dtype=DataType.VARCHAR, max_length=65535),
         ]
 
-        schema = CollectionSchema(fields=fields, description="Code embeddings for RAG")
+        schema = CollectionSchema(fields=fields, description="Multi-tenant code embeddings for RAG")
         self.collection = Collection(name=self.collection_name, schema=schema)
 
+        # Create index on embedding field for similarity search
         index_params = {
             "metric_type": "COSINE",
             "index_type": "IVF_FLAT",
@@ -106,14 +111,16 @@ class EmbeddingHandler:
             )
             return response.data[0].embedding
 
-    def insert_code_chunk(self, chunk: Dict[str, Any]) -> str:
+    def insert_code_chunk(self, chunk: Dict[str, Any], user_id: str, repo_id: str) -> str:
         """Insert a code chunk with its embedding into Milvus."""
-        chunk_id = f"{chunk['file']}:{chunk['type']}:{chunk['start_line']}"
+        chunk_id = f"{repo_id}:{chunk['file']}:{chunk['type']}:{chunk['start_line']}"
         embedding = self.generate_embedding(chunk['content'])
 
         data = [{
             'id': chunk_id,
             'embedding': embedding,
+            'user_id': user_id,
+            'repo_id': repo_id,
             'file_path': chunk['file'],
             'code_type': chunk['type'],
             'name': chunk.get('name', ''),
@@ -126,8 +133,8 @@ class EmbeddingHandler:
         self.collection.insert(data)
         return chunk_id
 
-    def insert_batch(self, chunks: List[Dict[str, Any]]) -> List[str]:
-        """Insert multiple code chunks in batch."""
+    def insert_batch(self, chunks: List[Dict[str, Any]], user_id: str, repo_id: str) -> List[str]:
+        """Insert multiple code chunks in batch for a specific user and repository."""
         if not chunks:
             return []
 
@@ -135,6 +142,8 @@ class EmbeddingHandler:
         data = {
             'id': [],
             'embedding': [],
+            'user_id': [],
+            'repo_id': [],
             'file_path': [],
             'code_type': [],
             'name': [],
@@ -145,13 +154,15 @@ class EmbeddingHandler:
         }
 
         for chunk in chunks:
-            chunk_id = f"{chunk['file']}:{chunk['type']}:{chunk['start_line']}"
+            chunk_id = f"{repo_id}:{chunk['file']}:{chunk['type']}:{chunk['start_line']}"
             chunk_ids.append(chunk_id)
 
             embedding = self.generate_embedding(chunk['content'])
 
             data['id'].append(chunk_id)
             data['embedding'].append(embedding)
+            data['user_id'].append(user_id)
+            data['repo_id'].append(repo_id)
             data['file_path'].append(chunk['file'])
             data['code_type'].append(chunk['type'])
             data['name'].append(chunk.get('name', ''))
@@ -164,24 +175,30 @@ class EmbeddingHandler:
         self.collection.flush()
         return chunk_ids
 
-    def search_similar_code(self, query: str, top_k: int = 5,
-                           filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-        """Search for similar code using semantic similarity."""
+    def search_similar_code(self, query: str, user_id: str = None, repo_id: str = None,
+                           top_k: int = 5, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """Search for similar code using semantic similarity with multi-tenant filtering."""
         query_embedding = self.generate_embedding(query)
 
         search_params = {"metric_type": "COSINE", "params": {"nprobe": 10}}
 
-        expr = None
+        # Build filter expression for multi-tenancy
+        conditions = []
+        if user_id:
+            conditions.append(f'user_id == "{user_id}"')
+        if repo_id:
+            conditions.append(f'repo_id == "{repo_id}"')
+
+        # Add additional filters
         if filters:
-            conditions = []
             if 'language' in filters:
                 conditions.append(f'language == "{filters["language"]}"')
             if 'code_type' in filters:
                 conditions.append(f'code_type == "{filters["code_type"]}"')
             if 'file_path' in filters:
                 conditions.append(f'file_path like "%{filters["file_path"]}%"')
-            if conditions:
-                expr = ' and '.join(conditions)
+
+        expr = ' and '.join(conditions) if conditions else None
 
         results = self.collection.search(
             data=[query_embedding],
@@ -189,8 +206,8 @@ class EmbeddingHandler:
             param=search_params,
             limit=top_k,
             expr=expr,
-            output_fields=["id", "file_path", "code_type", "name", "language",
-                          "start_line", "end_line", "content"]
+            output_fields=["id", "user_id", "repo_id", "file_path", "code_type", "name",
+                          "language", "start_line", "end_line", "content"]
         )
 
         formatted_results = []
@@ -198,6 +215,8 @@ class EmbeddingHandler:
             for hit in hits:
                 formatted_results.append({
                     'id': hit.entity.get('id'),
+                    'user_id': hit.entity.get('user_id'),
+                    'repo_id': hit.entity.get('repo_id'),
                     'file_path': hit.entity.get('file_path'),
                     'code_type': hit.entity.get('code_type'),
                     'name': hit.entity.get('name'),
@@ -222,9 +241,18 @@ class EmbeddingHandler:
             return results[0]
         return None
 
-    def delete_by_file(self, file_path: str):
+    def delete_by_file(self, file_path: str, repo_id: str = None):
         """Delete all embeddings for a specific file."""
-        expr = f'file_path == "{file_path}"'
+        if repo_id:
+            expr = f'file_path == "{file_path}" and repo_id == "{repo_id}"'
+        else:
+            expr = f'file_path == "{file_path}"'
+        self.collection.delete(expr)
+        self.collection.flush()
+
+    def delete_by_repo(self, repo_id: str):
+        """Delete all embeddings for a specific repository."""
+        expr = f'repo_id == "{repo_id}"'
         self.collection.delete(expr)
         self.collection.flush()
 
