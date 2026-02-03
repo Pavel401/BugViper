@@ -1,0 +1,35 @@
+"""Agent configuration with OpenRouter support.
+
+Reads configuration ONLY from .env file, not from system environment.
+"""
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
+from typing import Optional
+
+
+class AgentConfig(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        case_sensitive=False,
+    )
+
+    openrouter_api_key: str = Field(default="sk-or-v1-placeholder")
+    openrouter_base_url: str = Field(default="https://openrouter.ai/api/v1")
+    context_model: str = Field(default="openai/gpt-4o-mini")
+    review_model: str = Field(default="openai/gpt-4o-mini")
+    max_recursion_depth: int = Field(default=3)
+    llm_temperature: float = Field(default=0.3)
+    enable_logfire: bool = Field(default=False)
+    logfire_token: Optional[str] = Field(default=None)
+
+    @classmethod
+    def settings_customise_sources(
+        cls, settings_cls, init_settings, env_settings, dotenv_settings, file_secret_settings,
+    ):
+        return (init_settings, dotenv_settings, file_secret_settings)
+
+
+config = AgentConfig()
