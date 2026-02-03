@@ -19,6 +19,33 @@ BugViper is an advanced AI-powered code review and repository ingestion tool. It
 - **AI**: Pydantic AI, OpenAI
 - **Parsing**: Tree-sitter
 
+## 📸 Gallery
+
+<div align="center">
+
+### The Dashboard
+
+Overview of the repository status and recent activities.
+<br/>
+<img src="./screenshots/dashboard.png" alt="Dashboard View" width="800"/>
+<br/><br/>
+
+### Knowledge Graph
+
+Deep dive into code relationships and dependencies rooted in Neo4j.
+<br/>
+<img src="./screenshots/graph.png" alt="Graph View" width="800"/>
+<br/><br/>
+
+### AI Agents
+
+Intelligent code analysis and automated PR reviews.
+<br/>
+<img src="./screenshots/agent.png" alt="Agent View" width="800"/>
+<br/><br/>
+
+</div>
+
 ## 🚧 Work In Progress
 
 This project is currently under active development.
