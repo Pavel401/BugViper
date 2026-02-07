@@ -112,28 +112,26 @@ class AdvancedIngestionEngine:
                     raise ValueError("local_path must be provided for ingestion")
                 analysis_path = Path(local_path)
 
-            # Create user and repository nodes using existing service
-            self.ingestion_service.create_user(username)
-            created_repo_id = self.ingestion_service.create_repository(
-                username=username,
-                repo_name=repo_name,
-                url=repo_url,
-                local_path=str(analysis_path),
-                default_branch="main"  # Default for now
-            )
-
-            print(f"Repository ID: {created_repo_id}")
+            repo_id = f"{username}/{repo_name}"
+            print(f"Repository ID: {repo_id}")
 
             # Use the advanced graph builder to analyze the repository
+            # (build_project_graph creates the Repository node via add_repository_to_graph)
             print("\nRunning advanced multi-language analysis...")
-            
+
             # Build the graph using the advanced system
             result = asyncio.run(
                 self.graph_builder.build_project_graph(
                     str(analysis_path),
-                    include_dependencies=False  # Start simple
+                    include_dependencies=False,  # Start simple
+                    owner=username,
+                    repo_name=repo_name
                 )
             )
+
+            # Create user node and link to repository
+            self.ingestion_service.create_user(username)
+            self._link_user_to_repository(username, repo_id, repo_url, str(analysis_path))
 
             # Update job status
             self.job_manager.update_job_status(job_id, JobStatus.COMPLETED)
@@ -231,25 +229,27 @@ class AdvancedIngestionEngine:
             try:
                 self.job_manager.update_job_status(job_id, JobStatus.RUNNING)
 
-                # Create user and repository nodes using existing service
-                self.ingestion_service.create_user(owner)
-                created_repo_id = self.ingestion_service.create_repository(
-                    username=owner,
-                    repo_name=repo_name,
-                    url=f"https://github.com/{owner}/{repo_name}",
-                    local_path=str(clone_path),
-                    default_branch=repo_info.get('default_branch', 'main')
-                )
-
-                print(f"Repository ID: {created_repo_id}")
+                repo_id = f"{owner}/{repo_name}"
+                print(f"Repository ID: {repo_id}")
 
                 # Use the advanced graph builder to analyze the repository
+                # (build_project_graph creates the Repository node via add_repository_to_graph)
                 print("\nRunning advanced multi-language analysis...")
-                
+
                 # Build the graph using the advanced system
                 result = await self.graph_builder.build_project_graph(
                     str(clone_path),
-                    include_dependencies=False
+                    include_dependencies=False,
+                    owner=owner,
+                    repo_name=repo_name
+                )
+
+                # Create user node and link to repository after graph is built
+                self.ingestion_service.create_user(owner)
+                self._link_user_to_repository(
+                    owner, repo_id,
+                    f"https://github.com/{owner}/{repo_name}",
+                    str(clone_path)
                 )
 
                 # Clean up cloned repository
@@ -291,6 +291,16 @@ class AdvancedIngestionEngine:
         except Exception as e:
             print(f"\n❌ GitHub ingestion failed: {str(e)}")
             return IngestionStats(errors=[str(e)])
+
+    def _link_user_to_repository(self, username: str, repo_id: str, url: str = None, local_path: str = None):
+        """Link a User node to an existing Repository node created by the graph builder."""
+        with self.neo4j_client.driver.session() as session:
+            session.run("""
+                MATCH (u:User {username: $username})
+                MATCH (r:Repository {repo: $repo_id})
+                SET r.url = $url, r.path = $local_path
+                MERGE (u)-[:OWNS]->(r)
+            """, username=username, repo_id=repo_id, url=url, local_path=local_path)
 
     def close(self):
         """Close database connections."""

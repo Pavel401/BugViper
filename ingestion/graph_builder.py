@@ -141,24 +141,29 @@ class GraphBuilder:
     def create_schema(self):
         """Create constraints and indexes in Neo4j."""
         # When adding a new node type with a unique key, add its constraint here.
+        # NOTE: We use 'repo' (format: "owner/name") + relative 'path' for uniqueness
         with self.driver.session() as session:
             try:
-                session.run("CREATE CONSTRAINT repository_path IF NOT EXISTS FOR (r:Repository) REQUIRE r.path IS UNIQUE")
-                session.run("CREATE CONSTRAINT path IF NOT EXISTS FOR (f:File) REQUIRE f.path IS UNIQUE")
-                session.run("CREATE CONSTRAINT directory_path IF NOT EXISTS FOR (d:Directory) REQUIRE d.path IS UNIQUE")
-                session.run("CREATE CONSTRAINT function_unique IF NOT EXISTS FOR (f:Function) REQUIRE (f.name, f.path, f.line_number) IS UNIQUE")
-                session.run("CREATE CONSTRAINT class_unique IF NOT EXISTS FOR (c:Class) REQUIRE (c.name, c.path, c.line_number) IS UNIQUE")
-                session.run("CREATE CONSTRAINT trait_unique IF NOT EXISTS FOR (t:Trait) REQUIRE (t.name, t.path, t.line_number) IS UNIQUE") # Added trait constraint
-                session.run("CREATE CONSTRAINT interface_unique IF NOT EXISTS FOR (i:Interface) REQUIRE (i.name, i.path, i.line_number) IS UNIQUE")
-                session.run("CREATE CONSTRAINT macro_unique IF NOT EXISTS FOR (m:Macro) REQUIRE (m.name, m.path, m.line_number) IS UNIQUE")
-                session.run("CREATE CONSTRAINT variable_unique IF NOT EXISTS FOR (v:Variable) REQUIRE (v.name, v.path, v.line_number) IS UNIQUE")
+                # Repository uses repo (owner/name) as unique key
+                session.run("CREATE CONSTRAINT repository_repo IF NOT EXISTS FOR (r:Repository) REQUIRE r.repo IS UNIQUE")
+                # File uses repo + relative path
+                session.run("CREATE CONSTRAINT file_unique IF NOT EXISTS FOR (f:File) REQUIRE (f.repo, f.path) IS UNIQUE")
+                # Directory uses repo + relative path
+                session.run("CREATE CONSTRAINT directory_unique IF NOT EXISTS FOR (d:Directory) REQUIRE (d.repo, d.path) IS UNIQUE")
+                # Code elements use repo + relative path + line_number
+                session.run("CREATE CONSTRAINT function_unique IF NOT EXISTS FOR (f:Function) REQUIRE (f.name, f.repo, f.path, f.line_number) IS UNIQUE")
+                session.run("CREATE CONSTRAINT class_unique IF NOT EXISTS FOR (c:Class) REQUIRE (c.name, c.repo, c.path, c.line_number) IS UNIQUE")
+                session.run("CREATE CONSTRAINT trait_unique IF NOT EXISTS FOR (t:Trait) REQUIRE (t.name, t.repo, t.path, t.line_number) IS UNIQUE")
+                session.run("CREATE CONSTRAINT interface_unique IF NOT EXISTS FOR (i:Interface) REQUIRE (i.name, i.repo, i.path, i.line_number) IS UNIQUE")
+                session.run("CREATE CONSTRAINT macro_unique IF NOT EXISTS FOR (m:Macro) REQUIRE (m.name, m.repo, m.path, m.line_number) IS UNIQUE")
+                session.run("CREATE CONSTRAINT variable_unique IF NOT EXISTS FOR (v:Variable) REQUIRE (v.name, v.repo, v.path, v.line_number) IS UNIQUE")
                 session.run("CREATE CONSTRAINT module_name IF NOT EXISTS FOR (m:Module) REQUIRE m.name IS UNIQUE")
-                session.run("CREATE CONSTRAINT struct_cpp IF NOT EXISTS FOR (cstruct: Struct) REQUIRE (cstruct.name, cstruct.path, cstruct.line_number) IS UNIQUE")
-                session.run("CREATE CONSTRAINT enum_cpp IF NOT EXISTS FOR (cenum: Enum) REQUIRE (cenum.name, cenum.path, cenum.line_number) IS UNIQUE")
-                session.run("CREATE CONSTRAINT union_cpp IF NOT EXISTS FOR (cunion: Union) REQUIRE (cunion.name, cunion.path, cunion.line_number) IS UNIQUE")
-                session.run("CREATE CONSTRAINT annotation_unique IF NOT EXISTS FOR (a:Annotation) REQUIRE (a.name, a.path, a.line_number) IS UNIQUE")
-                session.run("CREATE CONSTRAINT record_unique IF NOT EXISTS FOR (r:Record) REQUIRE (r.name, r.path, r.line_number) IS UNIQUE")
-                session.run("CREATE CONSTRAINT property_unique IF NOT EXISTS FOR (p:Property) REQUIRE (p.name, p.path, p.line_number) IS UNIQUE")
+                session.run("CREATE CONSTRAINT struct_unique IF NOT EXISTS FOR (cstruct: Struct) REQUIRE (cstruct.name, cstruct.repo, cstruct.path, cstruct.line_number) IS UNIQUE")
+                session.run("CREATE CONSTRAINT enum_unique IF NOT EXISTS FOR (cenum: Enum) REQUIRE (cenum.name, cenum.repo, cenum.path, cenum.line_number) IS UNIQUE")
+                session.run("CREATE CONSTRAINT union_unique IF NOT EXISTS FOR (cunion: Union) REQUIRE (cunion.name, cunion.repo, cunion.path, cunion.line_number) IS UNIQUE")
+                session.run("CREATE CONSTRAINT annotation_unique IF NOT EXISTS FOR (a:Annotation) REQUIRE (a.name, a.repo, a.path, a.line_number) IS UNIQUE")
+                session.run("CREATE CONSTRAINT record_unique IF NOT EXISTS FOR (r:Record) REQUIRE (r.name, r.repo, r.path, r.line_number) IS UNIQUE")
+                session.run("CREATE CONSTRAINT property_unique IF NOT EXISTS FOR (p:Property) REQUIRE (p.name, p.repo, p.path, p.line_number) IS UNIQUE")
                 
                 # Indexes for language attribute
                 session.run("CREATE INDEX function_lang IF NOT EXISTS FOR (f:Function) ON (f.lang)")
@@ -254,120 +259,159 @@ class GraphBuilder:
             
         return imports_map
 
-    async def build_project_graph(self, project_path: str, include_dependencies: bool = False) -> Dict[str, Any]:
+    async def build_project_graph(self, project_path: str, include_dependencies: bool = False,
+                                    owner: str = None, repo_name: str = None) -> Dict[str, Any]:
         """
         Main entry point for building project graph.
-        
+
         Args:
             project_path: Path to the project root
             include_dependencies: Whether to include dependency analysis
-            
+            owner: GitHub owner (e.g., 'Pavel401'). Defaults to 'local' if not provided
+            repo_name: Repository name. Defaults to directory name if not provided
+
         Returns:
             Dictionary with ingestion statistics
         """
         project_path_obj = Path(project_path)
-        
+
         if not project_path_obj.exists():
             raise ValueError(f"Project path does not exist: {project_path}")
-        
-        print(f"Building graph for project: {project_path}")
-        
+
+        if repo_name is None:
+            repo_name = project_path_obj.name
+        if owner is None:
+            owner = "local"
+
+        repo_identifier = f"{owner}/{repo_name}"
+        print(f"Building graph for project: {repo_identifier}")
+
         # Add repository to graph
-        self.add_repository_to_graph(project_path_obj, is_dependency=False)
-        
+        self.add_repository_to_graph(project_path_obj, is_dependency=False, owner=owner, repo_name=repo_name)
+
         # Get all source files
         files = []
         supported_extensions = list(self.parsers.keys())
-        
+
         for ext in supported_extensions:
             pattern = f"**/*{ext}"
             found_files = list(project_path_obj.glob(pattern))
             files.extend([f for f in found_files if f.is_file()])
-        
+
         print(f"Found {len(files)} files to process")
-        
-        # Pre-scan for imports
+
+        # Pre-scan for imports (now returns relative paths)
         imports_map = self._pre_scan_for_imports(files)
         print(f"Pre-scan complete, found {len(imports_map)} imports")
-        
+
         # Process each file
         files_processed = 0
         files_skipped = 0
         classes_found = 0
         functions_found = 0
         errors = []
-        
+
         for file_path in files:
             try:
                 ext = file_path.suffix
                 if ext in self.parsers:
-                    # Parse the file
                     file_data = self.parse_file(project_path_obj, file_path, is_dependency=False)
 
                     if file_data and "error" not in file_data:
-                        # Add file to graph
-                        self.add_file_to_graph(file_data, project_path_obj.name, imports_map)
+                        # Add repo_identifier to file_data for relationship creation
+                        file_data['repo_identifier'] = repo_identifier
+                        self.add_file_to_graph(file_data, repo_identifier, imports_map)
                         files_processed += 1
-                        
-                        # Count structures
+
                         classes_found += len(file_data.get('classes', []))
                         functions_found += len(file_data.get('functions', []))
                     else:
                         files_skipped += 1
                 else:
                     files_skipped += 1
-                    
+
             except Exception as e:
                 error_msg = f"Error processing {file_path}: {str(e)}"
                 errors.append(error_msg)
-                print(f"❌ {error_msg}")
+                print(f"  {error_msg}")
                 files_skipped += 1
-        
-        print(f"✅ Graph building complete!")
-        
+
+        print(f"Graph building complete!")
+
         return {
+            'repo': repo_identifier,
             'files_processed': files_processed,
             'files_skipped': files_skipped,
             'classes_found': classes_found,
             'functions_found': functions_found,
             'imports_found': len(imports_map),
-            'total_lines': 0,  # TODO: Calculate from file data
+            'total_lines': 0,
             'errors': errors
         }
 
     # Language-agnostic method
-    def add_repository_to_graph(self, repo_path: Path, is_dependency: bool = False):
-        """Adds a repository node using its absolute path as the unique key."""
-        repo_name = repo_path.name
-        repo_path_str = str(repo_path.resolve())
+    def add_repository_to_graph(self, repo_path: Path, is_dependency: bool = False, owner: str = None, repo_name: str = None):
+        """
+        Adds a repository node using owner/name as the unique key.
+
+        Args:
+            repo_path: Local path to the repository (used for parsing, not stored as identifier)
+            is_dependency: Whether this is a dependency repository
+            owner: GitHub owner (e.g., 'Pavel401'). If not provided, defaults to 'local'
+            repo_name: Repository name (e.g., 'FinanceBro'). If not provided, uses directory name
+        """
+        if repo_name is None:
+            repo_name = repo_path.name
+        if owner is None:
+            owner = "local"  # Default for local repos without GitHub context
+
+        repo_identifier = f"{owner}/{repo_name}"
+
         with self.driver.session() as session:
             session.run(
                 """
-                MERGE (r:Repository {path: $path})
-                SET r.name = $name, r.is_dependency = $is_dependency
+                MERGE (r:Repository {repo: $repo})
+                SET r.owner = $owner, r.name = $name, r.is_dependency = $is_dependency
                 """,
-                path=repo_path_str,
+                repo=repo_identifier,
+                owner=owner,
                 name=repo_name,
                 is_dependency=is_dependency,
             )
 
     # First pass to add file and its contents
-    def add_file_to_graph(self, file_data: Dict, repo_name: str, imports_map: dict):
-        info_logger("Executing add_file_to_graph with my change!")
-        """Adds a file and its contents within a single, unified session."""
-        file_path_str = str(Path(file_data['path']).resolve())
-        file_name = Path(file_path_str).name
+    def add_file_to_graph(self, file_data: Dict, repo_identifier: str, imports_map: dict):
+        """
+        Adds a file and its contents within a single, unified session.
+
+        Args:
+            file_data: Parsed file data from tree-sitter
+            repo_identifier: Repository identifier in "owner/name" format (e.g., "Pavel401/FinanceBro")
+            imports_map: Map of symbol names to file paths for resolving imports
+        """
+        info_logger(f"Adding file to graph for repo: {repo_identifier}")
+
+        # Get the absolute path for reading the file content
+        file_path_abs = str(Path(file_data['path']).resolve())
+        file_name = Path(file_path_abs).name
         is_dependency = file_data.get('is_dependency', False)
+
+        # Calculate relative path from repo root
+        repo_path_abs = Path(file_data.get('repo_path', '')).resolve()
+        try:
+            relative_path = str(Path(file_path_abs).relative_to(repo_path_abs))
+        except ValueError:
+            relative_path = file_name
 
         # Read file source code for storage
         file_source_code = None
         lines_count = 0
         try:
-            with open(file_path_str, 'r', errors='replace') as f:
+            with open(file_path_abs, 'r', errors='replace') as f:
                 file_source_code = f.read()
                 lines_count = file_source_code.count('\n') + 1
         except Exception as e:
-            warning_logger(f"Could not read source for {file_path_str}: {e}")
+            warning_logger(f"Could not read source for {file_path_abs}: {e}")
 
         # Detect language from extension
         ext_to_lang = {
@@ -378,58 +422,62 @@ class GraphBuilder:
             '.php': 'php', '.kt': 'kotlin', '.scala': 'scala',
             '.swift': 'swift', '.hs': 'haskell', '.ipynb': 'python',
         }
-        language = ext_to_lang.get(Path(file_path_str).suffix, 'unknown')
+        language = ext_to_lang.get(Path(file_path_abs).suffix, 'unknown')
 
         with self.driver.session() as session:
-            try:
-                # Match repository by path, not name, to avoid conflicts with same-named folders at different locations
-                repo_result = session.run("MATCH (r:Repository {path: $repo_path}) RETURN r.path as path", repo_path=str(Path(file_data['repo_path']).resolve())).single()
-                relative_path = str(Path(file_path_str).relative_to(Path(repo_result['path']))) if repo_result else file_name
-            except ValueError:
-                relative_path = file_name
-
-            # Build the repo-relative id for the file (e.g. "owner/repo::src/main.py")
-            repo_path_resolved = str(Path(file_data.get('repo_path', '')).resolve())
-            file_id = f"{repo_name}::{relative_path}"
-
+            # Create/update File node with repo + relative path as unique key
             session.run("""
-                MERGE (f:File {path: $path})
-                SET f.name = $name, f.relative_path = $relative_path,
-                    f.is_dependency = $is_dependency, f.id = $file_id,
-                    f.source_code = $source_code, f.language = $language,
+                MERGE (f:File {repo: $repo, path: $path})
+                SET f.name = $name,
+                    f.is_dependency = $is_dependency,
+                    f.source_code = $source_code,
+                    f.language = $language,
                     f.lines_count = $lines_count
-            """, path=file_path_str, name=file_name, relative_path=relative_path,
-                 is_dependency=is_dependency, file_id=file_id,
+            """, repo=repo_identifier, path=relative_path, name=file_name,
+                 is_dependency=is_dependency,
                  source_code=file_source_code, language=language,
                  lines_count=lines_count)
 
-            file_path_obj = Path(file_path_str)
-            repo_path_obj = Path(repo_result['path'])
-            
-            relative_path_to_file = file_path_obj.relative_to(repo_path_obj)
-            
-            parent_path = str(repo_path_obj)
+            # Build directory hierarchy with relative paths
+            path_parts = Path(relative_path).parts[:-1]  # All parts except filename
+            parent_path = None  # Start from repository
             parent_label = 'Repository'
 
-            for part in relative_path_to_file.parts[:-1]:
-                current_path = Path(parent_path) / part
-                current_path_str = str(current_path)
-                
-                session.run(f"""
-                    MATCH (p:{parent_label} {{path: $parent_path}})
-                    MERGE (d:Directory {{path: $current_path}})
-                    SET d.name = $part
-                    MERGE (p)-[:CONTAINS]->(d)
-                """, parent_path=parent_path, current_path=current_path_str, part=part)
+            for i, part in enumerate(path_parts):
+                # Build relative directory path
+                current_rel_path = str(Path(*path_parts[:i+1]))
 
-                parent_path = current_path_str
+                if parent_label == 'Repository':
+                    session.run("""
+                        MATCH (p:Repository {repo: $repo})
+                        MERGE (d:Directory {repo: $repo, path: $current_path})
+                        SET d.name = $part
+                        MERGE (p)-[:CONTAINS]->(d)
+                    """, repo=repo_identifier, current_path=current_rel_path, part=part)
+                else:
+                    session.run("""
+                        MATCH (p:Directory {repo: $repo, path: $parent_path})
+                        MERGE (d:Directory {repo: $repo, path: $current_path})
+                        SET d.name = $part
+                        MERGE (p)-[:CONTAINS]->(d)
+                    """, repo=repo_identifier, parent_path=parent_path, current_path=current_rel_path, part=part)
+
+                parent_path = current_rel_path
                 parent_label = 'Directory'
 
-            session.run(f"""
-                MATCH (p:{parent_label} {{path: $parent_path}})
-                MATCH (f:File {{path: $path}})
-                MERGE (p)-[:CONTAINS]->(f)
-            """, parent_path=parent_path, path=file_path_str)
+            # Link file to its parent (repo or directory)
+            if parent_label == 'Repository':
+                session.run("""
+                    MATCH (p:Repository {repo: $repo})
+                    MATCH (f:File {repo: $repo, path: $path})
+                    MERGE (p)-[:CONTAINS]->(f)
+                """, repo=repo_identifier, path=relative_path)
+            else:
+                session.run("""
+                    MATCH (p:Directory {repo: $repo, path: $parent_path})
+                    MATCH (f:File {repo: $repo, path: $path})
+                    MERGE (p)-[:CONTAINS]->(f)
+                """, repo=repo_identifier, parent_path=parent_path, path=relative_path)
 
             # CONTAINS relationships for functions, classes, and variables
             # To add a new language-specific node type (e.g., 'Trait' for Rust):
@@ -439,7 +487,7 @@ class GraphBuilder:
             item_mappings = [
                 (file_data.get('functions', []), 'Function'),
                 (file_data.get('classes', []), 'Class'),
-                (file_data.get('traits', []), 'Trait'), # <-- Added trait mapping
+                (file_data.get('traits', []), 'Trait'),
                 (file_data.get('variables', []), 'Variable'),
                 (file_data.get('interfaces', []), 'Interface'),
                 (file_data.get('macros', []), 'Macro'),
@@ -453,24 +501,29 @@ class GraphBuilder:
                 for item in item_data:
                     # Ensure cyclomatic_complexity is set for functions
                     if label == 'Function' and 'cyclomatic_complexity' not in item:
-                        item['cyclomatic_complexity'] = 1 # Default value
+                        item['cyclomatic_complexity'] = 1
+
+                    # Add repo to item props for storage
+                    item_props = {**item, 'repo': repo_identifier, 'path': relative_path}
 
                     query = f"""
-                        MATCH (f:File {{path: $path}})
-                        MERGE (n:{label} {{name: $name, path: $path, line_number: $line_number}})
+                        MATCH (f:File {{repo: $repo, path: $path}})
+                        MERGE (n:{label} {{name: $name, repo: $repo, path: $path, line_number: $line_number}})
                         SET n += $props
                         MERGE (f)-[:CONTAINS]->(n)
                     """
 
-                    session.run(query, path=file_path_str, name=item['name'], line_number=item['line_number'], props=item)
-                    
+                    session.run(query, repo=repo_identifier, path=relative_path,
+                               name=item['name'], line_number=item['line_number'], props=item_props)
+
                     if label == 'Function':
                         for arg_name in item.get('args', []):
                             session.run("""
-                                MATCH (fn:Function {name: $func_name, path: $path, line_number: $line_number})
-                                MERGE (p:Parameter {name: $arg_name, path: $path, function_line_number: $line_number})
+                                MATCH (fn:Function {name: $func_name, repo: $repo, path: $path, line_number: $line_number})
+                                MERGE (p:Parameter {name: $arg_name, repo: $repo, path: $path, function_line_number: $line_number})
                                 MERGE (fn)-[:HAS_PARAMETER]->(p)
-                            """, func_name=item['name'], path=file_path_str, line_number=item['line_number'], arg_name=arg_name)
+                            """, func_name=item['name'], repo=repo_identifier, path=relative_path,
+                               line_number=item['line_number'], arg_name=arg_name)
 
             # --- NEW: persist Ruby Modules ---
             for m in file_data.get('modules', []):
@@ -484,21 +537,20 @@ class GraphBuilder:
             for item in file_data.get('functions', []):
                 if item.get("context_type") == "function_definition":
                     session.run("""
-                        MATCH (outer:Function {name: $context, path: $path})
-                        MATCH (inner:Function {name: $name, path: $path, line_number: $line_number})
+                        MATCH (outer:Function {name: $context, repo: $repo, path: $path})
+                        MATCH (inner:Function {name: $name, repo: $repo, path: $path, line_number: $line_number})
                         MERGE (outer)-[:CONTAINS]->(inner)
-                    """, context=item["context"], path=file_path_str, name=item["name"], line_number=item["line_number"])
+                    """, context=item["context"], repo=repo_identifier, path=relative_path,
+                       name=item["name"], line_number=item["line_number"])
 
             # Handle imports and create IMPORTS relationships
             for imp in file_data.get('imports', []):
                 info_logger(f"Processing import: {imp}")
                 lang = file_data.get('lang')
                 if lang == 'javascript':
-                    # New, correct logic for JS
                     module_name = imp.get('source')
                     if not module_name: continue
 
-                    # Use a map for relationship properties to handle optional alias and line_number
                     rel_props = {'imported_name': imp.get('name', '*')}
                     if imp.get('alias'):
                         rel_props['alias'] = imp.get('alias')
@@ -506,11 +558,11 @@ class GraphBuilder:
                         rel_props['line_number'] = imp.get('line_number')
 
                     session.run("""
-                        MATCH (f:File {path: $path})
+                        MATCH (f:File {repo: $repo, path: $path})
                         MERGE (m:Module {name: $module_name})
                         MERGE (f)-[r:IMPORTS]->(m)
                         SET r += $props
-                    """, path=file_path_str, module_name=module_name, props=rel_props)
+                    """, repo=repo_identifier, path=relative_path, module_name=module_name, props=rel_props)
                 else:
                     # Existing logic for Python (and other languages)
                     set_clauses = ["m.alias = $alias"]
@@ -518,7 +570,6 @@ class GraphBuilder:
                         set_clauses.append("m.full_import_name = $full_import_name")
                     set_clause_str = ", ".join(set_clauses)
 
-                    # Build relationship properties
                     rel_props = {}
                     if imp.get('line_number'):
                         rel_props['line_number'] = imp.get('line_number')
@@ -526,36 +577,37 @@ class GraphBuilder:
                         rel_props['alias'] = imp.get('alias')
 
                     session.run(f"""
-                        MATCH (f:File {{path: $path}})
+                        MATCH (f:File {{repo: $repo, path: $path}})
                         MERGE (m:Module {{name: $name}})
                         SET {set_clause_str}
                         MERGE (f)-[r:IMPORTS]->(m)
                         SET r += $rel_props
-                    """, path=file_path_str, rel_props=rel_props, **imp)
-
+                    """, repo=repo_identifier, path=relative_path, rel_props=rel_props, **imp)
 
             # Handle CONTAINS relationship between class to their children like variables
             for func in file_data.get('functions', []):
                 if func.get('class_context'):
                     session.run("""
-                        MATCH (c:Class {name: $class_name, path: $path})
-                        MATCH (fn:Function {name: $func_name, path: $path, line_number: $func_line})
+                        MATCH (c:Class {name: $class_name, repo: $repo, path: $path})
+                        MATCH (fn:Function {name: $func_name, repo: $repo, path: $path, line_number: $func_line})
                         MERGE (c)-[:CONTAINS]->(fn)
-                    """, 
+                    """,
                     class_name=func['class_context'],
-                    path=file_path_str,
+                    repo=repo_identifier,
+                    path=relative_path,
                     func_name=func['name'],
                     func_line=func['line_number'])
 
             # --- NEW: Class INCLUDES Module (Ruby mixins) ---
             for inc in file_data.get('module_inclusions', []):
                 session.run("""
-                    MATCH (c:Class {name: $class_name, path: $path})
+                    MATCH (c:Class {name: $class_name, repo: $repo, path: $path})
                     MERGE (m:Module {name: $module_name})
                     MERGE (c)-[:INCLUDES]->(m)
                 """,
                 class_name=inc["class"],
-                path=file_path_str,
+                repo=repo_identifier,
+                path=relative_path,
                 module_name=inc["module"])
 
             # Class inheritance is handled in a separate pass after all files are processed.
@@ -564,12 +616,20 @@ class GraphBuilder:
     # Second pass to create relationships that depend on all files being present like call functions and class inheritance
     def _create_function_calls(self, session, file_data: Dict, imports_map: dict):
         """Create CALLS relationships with a unified, prioritized logic flow for all call types."""
-        caller_file_path = str(Path(file_data['path']).resolve())
+        # Get repo identifier and relative path
+        repo_identifier = file_data.get('repo_identifier', 'local/unknown')
+        repo_path_abs = Path(file_data.get('repo_path', '')).resolve()
+        file_path_abs = Path(file_data['path']).resolve()
+        try:
+            caller_relative_path = str(file_path_abs.relative_to(repo_path_abs))
+        except ValueError:
+            caller_relative_path = file_path_abs.name
+
         local_names = {f['name'] for f in file_data.get('functions', [])} | \
                       {c['name'] for c in file_data.get('classes', [])}
-        local_imports = {imp.get('alias') or imp['name'].split('.')[-1]: imp['name'] 
+        local_imports = {imp.get('alias') or imp['name'].split('.')[-1]: imp['name']
                         for imp in file_data.get('imports', [])}
-        
+
         for call in file_data.get('function_calls', []):
             called_name = call['name']
             if called_name in __builtins__: continue
@@ -577,33 +637,27 @@ class GraphBuilder:
             resolved_path = None
             full_call = call.get('full_name', called_name)
             base_obj = full_call.split('.')[0] if '.' in full_call else None
-            
-            # For chained calls like self.graph_builder.method(), we need to look up 'method'
-            # For direct calls like self.method(), we can use the caller's file
+
             is_chained_call = full_call.count('.') > 1 if '.' in full_call else False
-            
-            # Determine the lookup name:
-            # - For chained calls (self.attr.method), use the actual method name
-            # - For direct calls (self.method or module.function), use the base object
+
             if is_chained_call and base_obj in ('self', 'this', 'super', 'super()', 'cls', '@'):
-                lookup_name = called_name  # Use the actual method name for lookup
+                lookup_name = called_name
             else:
                 lookup_name = base_obj if base_obj else called_name
 
             # 1. Check for local context keywords/direct local names
-            # Only resolve to caller_file_path for DIRECT self/this calls, not chained ones
             if base_obj in ('self', 'this', 'super', 'super()', 'cls', '@') and not is_chained_call:
-                resolved_path = caller_file_path
+                resolved_path = caller_relative_path
             elif lookup_name in local_names:
-                resolved_path = caller_file_path
-            
+                resolved_path = caller_relative_path
+
             # 2. Check inferred type if available
             elif call.get('inferred_obj_type'):
                 obj_type = call['inferred_obj_type']
                 possible_paths = imports_map.get(obj_type, [])
                 if len(possible_paths) > 0:
                     resolved_path = possible_paths[0]
-            
+
             # 3. Check imports map with validation against local imports
             if not resolved_path:
                 possible_paths = imports_map.get(lookup_name, [])
@@ -612,44 +666,26 @@ class GraphBuilder:
                 elif len(possible_paths) > 1:
                     if lookup_name in local_imports:
                         full_import_name = local_imports[lookup_name]
-                        
-                        # Optimization: Check if the FQN is directly in imports_map (from pre-scan)
+
                         if full_import_name in imports_map:
                              direct_paths = imports_map[full_import_name]
                              if direct_paths and len(direct_paths) == 1:
                                  resolved_path = direct_paths[0]
-                        
+
                         if not resolved_path:
                             for path in possible_paths:
                                 if full_import_name.replace('.', '/') in path:
                                     resolved_path = path
                                     break
-            
+
             if not resolved_path:
-                 warning_logger(f"Could not resolve call {called_name} (lookup: {lookup_name}) in {caller_file_path}")
-            # else:
-            #      info_logger(f"Resolved call {called_name} -> {resolved_path}")
-            
-            # Legacy fallback block (was mis-indented)
-            if not resolved_path:
-                possible_paths = imports_map.get(lookup_name, [])
-                if len(possible_paths) > 0:
-                     # Final fallback: global candidate
-                     # Check if it was imported explicitly, otherwise risky
-                     if lookup_name in local_imports:
-                         # We already tried specific matching above, but if we are here
-                         # it means we had ambiguity without matching path?
-                         pass
-                     else:
-                        # Fallback to first available if not imported? Or skip?
-                        # Original logic: resolved_path = possible_paths[0]
-                        # But wait, original code logic was:
-                        pass
+                 warning_logger(f"Could not resolve call {called_name} (lookup: {lookup_name}) in {caller_relative_path}")
+
+            # Fallback resolution
             if not resolved_path:
                 if called_name in local_names:
-                    resolved_path = caller_file_path
+                    resolved_path = caller_relative_path
                 elif called_name in imports_map and imports_map[called_name]:
-                    # Check if any path in imports_map for called_name matches current file's imports
                     candidates = imports_map[called_name]
                     for path in candidates:
                         for imp_name in local_imports.values():
@@ -660,45 +696,47 @@ class GraphBuilder:
                     if not resolved_path:
                         resolved_path = candidates[0]
                 else:
-                    resolved_path = caller_file_path
+                    resolved_path = caller_relative_path
 
             caller_context = call.get('context')
             if caller_context and len(caller_context) == 3 and caller_context[0] is not None:
                 caller_name, _, caller_line_number = caller_context
-                # if called_name == "sumOfSquares":
-                    # print(f"DEBUG_CYPHER: caller={caller_name}, caller_line={caller_line_number}, called={called_name}, path={resolved_path}")
 
                 session.run("""
-                    MATCH (caller) WHERE (caller:Function OR caller:Class) 
-                      AND caller.name = $caller_name 
-                      AND caller.path = $caller_file_path 
+                    MATCH (caller) WHERE (caller:Function OR caller:Class)
+                      AND caller.name = $caller_name
+                      AND caller.repo = $repo
+                      AND caller.path = $caller_path
                       AND caller.line_number = $caller_line_number
                     MATCH (called) WHERE (called:Function OR called:Class)
-                      AND called.name = $called_name 
-                      AND called.path = $called_file_path
-                    
+                      AND called.name = $called_name
+                      AND called.repo = $repo
+                      AND called.path = $called_path
+
                     WITH caller, called
                     OPTIONAL MATCH (called)-[:CONTAINS]->(init:Function)
                     WHERE called:Class AND init.name IN ["__init__", "constructor"]
                     WITH caller, COALESCE(init, called) as final_target
-                    
+
                     MERGE (caller)-[:CALLS {line_number: $line_number, args: $args, full_call_name: $full_call_name}]->(final_target)
                 """,
                 caller_name=caller_name,
-                caller_file_path=caller_file_path,
+                repo=repo_identifier,
+                caller_path=caller_relative_path,
                 caller_line_number=caller_line_number,
                 called_name=called_name,
-                called_file_path=resolved_path,
+                called_path=resolved_path,
                 line_number=call['line_number'],
                 args=call.get('args', []),
                 full_call_name=call.get('full_name', called_name))
             else:
                 session.run("""
-                    MATCH (caller:File {path: $caller_file_path})
+                    MATCH (caller:File {repo: $repo, path: $caller_path})
                     MATCH (called) WHERE (called:Function OR called:Class)
-                      AND called.name = $called_name 
-                      AND called.path = $called_file_path
-                    
+                      AND called.name = $called_name
+                      AND called.repo = $repo
+                      AND called.path = $called_path
+
                     WITH caller, called
                     OPTIONAL MATCH (called)-[:CONTAINS]->(init:Function)
                     WHERE called:Class AND init.name IN ["__init__", "constructor"]
@@ -706,9 +744,10 @@ class GraphBuilder:
 
                     MERGE (caller)-[:CALLS {line_number: $line_number, args: $args, full_call_name: $full_call_name}]->(final_target)
                 """,
-                caller_file_path=caller_file_path,
+                repo=repo_identifier,
+                caller_path=caller_relative_path,
                 called_name=called_name,
-                called_file_path=resolved_path,
+                called_path=resolved_path,
                 line_number=call['line_number'],
                 args=call.get('args', []),
                 full_call_name=call.get('full_name', called_name))
@@ -721,9 +760,16 @@ class GraphBuilder:
 
     def _create_inheritance_links(self, session, file_data: Dict, imports_map: dict):
         """Create INHERITS relationships with a more robust resolution logic."""
-        caller_file_path = str(Path(file_data['path']).resolve())
+        # Get repo identifier and relative path
+        repo_identifier = file_data.get('repo_identifier', 'local/unknown')
+        repo_path_abs = Path(file_data.get('repo_path', '')).resolve()
+        file_path_abs = Path(file_data['path']).resolve()
+        try:
+            caller_relative_path = str(file_path_abs.relative_to(repo_path_abs))
+        except ValueError:
+            caller_relative_path = file_path_abs.name
+
         local_class_names = {c['name'] for c in file_data.get('classes', [])}
-        # Create a map of local import aliases/names to full import names
         local_imports = {imp.get('alias') or imp['name'].split('.')[-1]: imp['name']
                          for imp in file_data.get('imports', [])}
 
@@ -738,26 +784,20 @@ class GraphBuilder:
                 resolved_path = None
                 target_class_name = base_class_str.split('.')[-1]
 
-                # Handle qualified names like module.Class or alias.Class
                 if '.' in base_class_str:
                     lookup_name = base_class_str.split('.')[0]
-                    
-                    # Case 1: The prefix is a known import
+
                     if lookup_name in local_imports:
                         full_import_name = local_imports[lookup_name]
                         possible_paths = imports_map.get(target_class_name, [])
-                        # Find the path that corresponds to the imported module
                         for path in possible_paths:
                             if full_import_name.replace('.', '/') in path:
                                 resolved_path = path
                                 break
-                # Handle simple names
                 else:
                     lookup_name = base_class_str
-                    # Case 2: The base class is in the same file
                     if lookup_name in local_class_names:
-                        resolved_path = caller_file_path
-                    # Case 3: The base class was imported directly (e.g., from module import Parent)
+                        resolved_path = caller_relative_path
                     elif lookup_name in local_imports:
                         full_import_name = local_imports[lookup_name]
                         possible_paths = imports_map.get(target_class_name, [])
@@ -765,89 +805,87 @@ class GraphBuilder:
                             if full_import_name.replace('.', '/') in path:
                                 resolved_path = path
                                 break
-                    # Case 4: Fallback to global map (less reliable)
                     elif lookup_name in imports_map:
                         possible_paths = imports_map[lookup_name]
                         if len(possible_paths) == 1:
                             resolved_path = possible_paths[0]
-                
-                # If a path was found, create the relationship
+
                 if resolved_path:
                     session.run("""
-                        MATCH (child:Class {name: $child_name, path: $path})
-                        MATCH (parent:Class {name: $parent_name, path: $resolved_parent_file_path})
+                        MATCH (child:Class {name: $child_name, repo: $repo, path: $path})
+                        MATCH (parent:Class {name: $parent_name, repo: $repo, path: $resolved_parent_path})
                         MERGE (child)-[:INHERITS]->(parent)
                     """,
                     child_name=class_item['name'],
-                    path=caller_file_path,
+                    repo=repo_identifier,
+                    path=caller_relative_path,
                     parent_name=target_class_name,
-                    resolved_parent_file_path=resolved_path)
+                    resolved_parent_path=resolved_path)
 
 
     def _create_csharp_inheritance_and_interfaces(self, session, file_data: Dict, imports_map: dict):
         """Create INHERITS and IMPLEMENTS relationships for C# types."""
         if file_data.get('lang') != 'c_sharp':
             return
-            
-        caller_file_path = str(Path(file_data['path']).resolve())
-        
-        # Collect all local type names
+
+        # Get repo identifier and relative path
+        repo_identifier = file_data.get('repo_identifier', 'local/unknown')
+        repo_path_abs = Path(file_data.get('repo_path', '')).resolve()
+        file_path_abs = Path(file_data['path']).resolve()
+        try:
+            caller_relative_path = str(file_path_abs.relative_to(repo_path_abs))
+        except ValueError:
+            caller_relative_path = file_path_abs.name
+
         local_type_names = set()
         for type_list in ['classes', 'interfaces', 'structs', 'records']:
             local_type_names.update(t['name'] for t in file_data.get(type_list, []))
-        
-        # Process all type declarations that can have bases
+
         for type_list_name, type_label in [('classes', 'Class'), ('structs', 'Struct'), ('records', 'Record'), ('interfaces', 'Interface')]:
             for type_item in file_data.get(type_list_name, []):
                 if not type_item.get('bases'):
                     continue
-                
+
                 for base_str in type_item['bases']:
-                    # Clean up the base name (remove generic parameters, etc.)
                     base_name = base_str.split('<')[0].strip()
-                    
-                    # Determine if this is an interface
+
                     is_interface = False
-                    resolved_path = caller_file_path
-                    
-                    # Check if base is a local interface
+                    resolved_path = caller_relative_path
+
                     for iface in file_data.get('interfaces', []):
                         if iface['name'] == base_name:
                             is_interface = True
                             break
-                    
-                    # Check if base is in imports_map
+
                     if base_name in imports_map:
                         possible_paths = imports_map[base_name]
                         if len(possible_paths) > 0:
                             resolved_path = possible_paths[0]
-                    
-                    # For C#, first base is usually the class (if any), rest are interfaces
+
                     base_index = type_item['bases'].index(base_str)
-                    
-                    # Try to determine if it's an interface
+
                     if is_interface or (base_index > 0 and type_label == 'Class'):
-                        # This is an IMPLEMENTS relationship
                         session.run("""
-                            MATCH (child {name: $child_name, path: $path})
+                            MATCH (child {name: $child_name, repo: $repo, path: $path})
                             WHERE child:Class OR child:Struct OR child:Record
-                            MATCH (iface:Interface {name: $interface_name})
+                            MATCH (iface:Interface {name: $interface_name, repo: $repo})
                             MERGE (child)-[:IMPLEMENTS]->(iface)
                         """,
                         child_name=type_item['name'],
-                        path=caller_file_path,
+                        repo=repo_identifier,
+                        path=caller_relative_path,
                         interface_name=base_name)
                     else:
-                        # This is an INHERITS relationship
                         session.run("""
-                            MATCH (child {name: $child_name, path: $path})
+                            MATCH (child {name: $child_name, repo: $repo, path: $path})
                             WHERE child:Class OR child:Record OR child:Interface
-                            MATCH (parent {name: $parent_name})
+                            MATCH (parent {name: $parent_name, repo: $repo})
                             WHERE parent:Class OR parent:Record OR parent:Interface
                             MERGE (child)-[:INHERITS]->(parent)
                         """,
                         child_name=type_item['name'],
-                        path=caller_file_path,
+                        repo=repo_identifier,
+                        path=caller_relative_path,
                         parent_name=base_name)
 
     def _create_all_inheritance_links(self, all_file_data: list[Dict], imports_map: dict):
@@ -860,67 +898,95 @@ class GraphBuilder:
                 else:
                     self._create_inheritance_links(session, file_data, imports_map)
                 
-    def delete_file_from_graph(self, path: str):
-        """Deletes a file and all its contained elements and relationships."""
-        file_path_str = str(Path(path).resolve())
+    def delete_file_from_graph(self, repo_identifier: str, relative_path: str):
+        """
+        Deletes a file and all its contained elements and relationships.
+
+        Args:
+            repo_identifier: Repository in "owner/name" format
+            relative_path: Relative path to the file within the repo
+        """
         with self.driver.session() as session:
+            # Get parent directories for cleanup
             parents_res = session.run("""
-                MATCH (f:File {path: $path})<-[:CONTAINS*]-(d:Directory)
+                MATCH (f:File {repo: $repo, path: $path})<-[:CONTAINS*]-(d:Directory)
                 RETURN d.path as path ORDER BY d.path DESC
-            """, path=file_path_str)
+            """, repo=repo_identifier, path=relative_path)
             parent_paths = [record["path"] for record in parents_res]
 
-            session.run(
-                """
-                MATCH (f:File {path: $path})
+            # Delete file and its elements
+            session.run("""
+                MATCH (f:File {repo: $repo, path: $path})
                 OPTIONAL MATCH (f)-[:CONTAINS]->(element)
                 DETACH DELETE f, element
-                """,
-                path=file_path_str,
-            )
-            info_logger(f"Deleted file and its elements from graph: {file_path_str}")
+            """, repo=repo_identifier, path=relative_path)
+            info_logger(f"Deleted file and its elements from graph: {repo_identifier}:{relative_path}")
 
-            for path in parent_paths:
+            # Clean up orphaned directories
+            for dir_path in parent_paths:
                 session.run("""
-                    MATCH (d:Directory {path: $path})
+                    MATCH (d:Directory {repo: $repo, path: $path})
                     WHERE NOT (d)-[:CONTAINS]->()
                     DETACH DELETE d
-                """, path=path)
+                """, repo=repo_identifier, path=dir_path)
 
-    def delete_repository_from_graph(self, repo_path: str) -> bool:
-        """Deletes a repository and all its contents from the graph. Returns True if deleted, False if not found."""
-        repo_path_str = str(Path(repo_path).resolve())
+    def delete_repository_from_graph(self, repo_identifier: str) -> bool:
+        """
+        Deletes a repository and all its contents from the graph.
+
+        Args:
+            repo_identifier: Repository in "owner/name" format
+
+        Returns:
+            True if deleted, False if not found
+        """
         with self.driver.session() as session:
-            # Check if it exists
-            result = session.run("MATCH (r:Repository {path: $path}) RETURN count(r) as cnt", path=repo_path_str).single()
+            result = session.run("MATCH (r:Repository {repo: $repo}) RETURN count(r) as cnt", repo=repo_identifier).single()
             if not result or result["cnt"] == 0:
-                warning_logger(f"Attempted to delete non-existent repository: {repo_path_str}")
+                warning_logger(f"Attempted to delete non-existent repository: {repo_identifier}")
                 return False
 
-            session.run("""MATCH (r:Repository {path: $path})
-                          OPTIONAL MATCH (r)-[:CONTAINS*]->(e)
-                          DETACH DELETE r, e""", path=repo_path_str)
-            info_logger(f"Deleted repository and its contents from graph: {repo_path_str}")
+            session.run("""
+                MATCH (r:Repository {repo: $repo})
+                OPTIONAL MATCH (r)-[:CONTAINS*]->(e)
+                DETACH DELETE r, e
+            """, repo=repo_identifier)
+            info_logger(f"Deleted repository and its contents from graph: {repo_identifier}")
             return True
 
-    def update_file_in_graph(self, path: Path, repo_path: Path, imports_map: dict):
-        """Updates a single file's nodes in the graph."""
-        file_path_str = str(path.resolve())
-        repo_name = repo_path.name
-        
-        self.delete_file_from_graph(file_path_str)
+    def update_file_in_graph(self, path: Path, repo_path: Path, imports_map: dict, repo_identifier: str = None):
+        """
+        Updates a single file's nodes in the graph.
+
+        Args:
+            path: Absolute path to the file
+            repo_path: Absolute path to the repository root
+            imports_map: Map of symbol names to relative paths
+            repo_identifier: Repository in "owner/name" format
+        """
+        if repo_identifier is None:
+            repo_identifier = f"local/{repo_path.name}"
+
+        # Calculate relative path
+        try:
+            relative_path = str(path.relative_to(repo_path))
+        except ValueError:
+            relative_path = path.name
+
+        self.delete_file_from_graph(repo_identifier, relative_path)
 
         if path.exists():
             file_data = self.parse_file(repo_path, path)
-            
+
             if "error" not in file_data:
-                self.add_file_to_graph(file_data, repo_name, imports_map)
+                file_data['repo_identifier'] = repo_identifier
+                self.add_file_to_graph(file_data, repo_identifier, imports_map)
                 return file_data
             else:
-                error_logger(f"Skipping graph add for {file_path_str} due to parsing error: {file_data['error']}")
+                error_logger(f"Skipping graph add for {relative_path} due to parsing error: {file_data['error']}")
                 return None
         else:
-            return {"deleted": True, "path": file_path_str}
+            return {"deleted": True, "repo": repo_identifier, "path": relative_path}
 
     def parse_file(self, repo_path: Path, path: Path, is_dependency: bool = False) -> Dict:
         """Parses a file with the appropriate language parser and extracts code elements."""
@@ -989,15 +1055,31 @@ class GraphBuilder:
             return None
 
     async def build_graph_from_path_async(
-        self, path: Path, is_dependency: bool = False, job_id: str = None
+        self, path: Path, is_dependency: bool = False, job_id: str = None,
+        owner: str = None, repo_name: str = None
     ):
-        """Builds graph from a directory or file path."""
+        """
+        Builds graph from a directory or file path.
+
+        Args:
+            path: Path to the directory or file
+            is_dependency: Whether this is a dependency
+            job_id: Optional job ID for progress tracking
+            owner: GitHub owner (defaults to 'local')
+            repo_name: Repository name (defaults to directory name)
+        """
         try:
             if job_id:
                 self.job_manager.update_job(job_id, status=JobStatus.RUNNING)
-            
-            self.add_repository_to_graph(path, is_dependency)
-            repo_name = path.name
+
+            if repo_name is None:
+                repo_name = path.name
+            if owner is None:
+                owner = "local"
+
+            repo_identifier = f"{owner}/{repo_name}"
+
+            self.add_repository_to_graph(path, is_dependency, owner=owner, repo_name=repo_name)
 
             # Search for .cgcignore upwards
             cgcignore_path = None
@@ -1081,7 +1163,9 @@ class GraphBuilder:
                     repo_path = path.resolve() if path.is_dir() else file.parent.resolve()
                     file_data = self.parse_file(repo_path, file, is_dependency)
                     if "error" not in file_data:
-                        self.add_file_to_graph(file_data, repo_name, imports_map)
+                        # Add repo_identifier for relationship creation in second pass
+                        file_data['repo_identifier'] = repo_identifier
+                        self.add_file_to_graph(file_data, repo_identifier, imports_map)
                         all_file_data.append(file_data)
                     processed_count += 1
                     if job_id:

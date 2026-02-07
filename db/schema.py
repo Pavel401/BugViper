@@ -40,7 +40,8 @@ class CodeGraphSchema:
         constraints = [
             # Unique constraints
             "CREATE CONSTRAINT user_username IF NOT EXISTS FOR (u:User) REQUIRE u.username IS UNIQUE",
-            "CREATE CONSTRAINT repo_unique IF NOT EXISTS FOR (r:Repository) REQUIRE (r.owner, r.name) IS UNIQUE",
+            # Repository uniqueness is handled by graph_builder's constraint on r.repo (owner/name format)
+            # "CREATE CONSTRAINT repo_unique IF NOT EXISTS FOR (r:Repository) REQUIRE (r.owner, r.name) IS UNIQUE",
             "CREATE CONSTRAINT file_path IF NOT EXISTS FOR (f:File) REQUIRE (f.repo_id, f.path) IS UNIQUE",
             "CREATE CONSTRAINT branch_unique IF NOT EXISTS FOR (b:Branch) REQUIRE (b.repo_id, b.name) IS UNIQUE",
             "CREATE CONSTRAINT config_file_path IF NOT EXISTS FOR (cf:ConfigFile) REQUIRE (cf.repo_id, cf.path) IS UNIQUE",
@@ -316,6 +317,44 @@ class CodeGraphSchema:
 
 CYPHER_QUERIES = {
     # -------------------------------------------------------------------------
+    # Graph Statistics
+    # -------------------------------------------------------------------------
+    "get_graph_stats": """
+        MATCH (r:Repository)
+        OPTIONAL MATCH (f:File)
+        OPTIONAL MATCH (c:Class)
+        OPTIONAL MATCH (fn:Function)
+        OPTIONAL MATCH (v:Variable)
+        OPTIONAL MATCH (m:Module)
+        RETURN
+            count(DISTINCT r) as repositories,
+            count(DISTINCT f) as files,
+            count(DISTINCT c) as classes,
+            count(DISTINCT fn) as functions,
+            count(DISTINCT v) as variables,
+            count(DISTINCT m) as modules
+    """,
+
+    "get_repo_stats": """
+        MATCH (r:Repository)
+        WHERE r.repo = $repo_id OR r.id = $repo_id
+        OPTIONAL MATCH (r)-[:CONTAINS*]->(f:File)
+        OPTIONAL MATCH (f)-[:CONTAINS]->(c:Class)
+        OPTIONAL MATCH (f)-[:CONTAINS]->(fn:Function)
+        OPTIONAL MATCH (f)-[:CONTAINS]->(v:Variable)
+        OPTIONAL MATCH (f)-[:IMPORTS]->(m:Module)
+        WITH r, f, c, fn, v, m
+        RETURN
+            count(DISTINCT f) as file_count,
+            count(DISTINCT c) as class_count,
+            count(DISTINCT fn) as function_count,
+            0 as method_count,
+            sum(COALESCE(f.lines_count, 0)) as line_count,
+            count(DISTINCT m) as import_count,
+            collect(DISTINCT f.language) as languages
+    """,
+
+    # -------------------------------------------------------------------------
     # User Operations
     # -------------------------------------------------------------------------
     "create_user": """
@@ -363,9 +402,10 @@ CYPHER_QUERIES = {
     # -------------------------------------------------------------------------
     "create_repository": """
         MATCH (u:User {username: $username})
-        MERGE (r:Repository {owner: $username, name: $repo_name})
-        ON CREATE SET 
-            r.id = $repo_id,
+        MERGE (r:Repository {repo: $repo_id})
+        ON CREATE SET
+            r.owner = $username,
+            r.name = $repo_name,
             r.url = $url,
             r.path = $local_path,
             r.description = $description,
