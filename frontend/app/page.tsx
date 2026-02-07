@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { BugViperLogo } from "@/components/logo";
+import { BugViperFullLogo } from "@/components/logo";
 import { getGraphStats } from "@/lib/api";
 
 export default function Dashboard() {
@@ -29,10 +29,7 @@ export default function Dashboard() {
   return (
     <div className="max-w-4xl mx-auto space-y-8">
       <div className="flex flex-col items-center text-center space-y-4 py-8">
-        <BugViperLogo size={80} />
-        <h1 className="text-4xl font-bold">
-          Bug<span className="text-primary">Viper</span>
-        </h1>
+        <BugViperFullLogo width={350} height={100} />
         <p className="text-muted-foreground text-lg max-w-md">
           Code intelligence and repository analysis platform. Ingest repositories and query your codebase.
         </p>

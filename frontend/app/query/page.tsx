@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
+import { CodeBlock } from "@/components/ui/code-block";
 import { toast } from "sonner";
 import * as api from "@/lib/api";
 
@@ -275,9 +276,11 @@ function DiffContextResults({ data }: { data: DiffContextData }) {
                   <p className="text-xs text-muted-foreground">{sym.docstring}</p>
                 )}
                 {sym.source && (
-                  <pre className="text-xs font-mono bg-muted p-2 rounded overflow-x-auto max-h-48">
-                    {sym.source}
-                  </pre>
+                  <CodeBlock
+                    code={sym.source}
+                    startLine={sym.start_line}
+                    maxHeight="max-h-48"
+                  />
                 )}
               </div>
             ))}
@@ -304,9 +307,11 @@ function DiffContextResults({ data }: { data: DiffContextData }) {
                     <span className="font-mono">{caller.name}</span>
                     <span className="text-xs text-muted-foreground ml-2">{caller.path}</span>
                     {caller.source && (
-                      <pre className="text-xs font-mono bg-muted p-2 rounded mt-1 overflow-x-auto max-h-32">
-                        {caller.source}
-                      </pre>
+                      <CodeBlock
+                        code={caller.source}
+                        maxHeight="max-h-32"
+                        className="mt-1"
+                      />
                     )}
                   </div>
                 ))}
@@ -351,9 +356,7 @@ function DiffContextResults({ data }: { data: DiffContextData }) {
             {Object.entries(data.file_sources).map(([path, source]) => (
               <div key={path} className="space-y-1">
                 <p className="text-sm font-mono text-primary">{path}</p>
-                <pre className="text-xs font-mono bg-muted p-3 rounded overflow-x-auto max-h-64">
-                  {source}
-                </pre>
+                <CodeBlock code={source} maxHeight="max-h-64" />
               </div>
             ))}
           </CardContent>
@@ -393,16 +396,65 @@ function ResultsView({ data }: { data: unknown }) {
 function ObjectView({ obj }: { obj: Record<string, unknown> }) {
   return (
     <div className="space-y-1">
-      {Object.entries(obj).map(([key, value]) => (
-        <div key={key} className="flex gap-2">
-          <span className="text-primary font-medium shrink-0">{key}:</span>
-          <span className="text-muted-foreground break-all">
-            {typeof value === "object" && value !== null
-              ? JSON.stringify(value, null, 2)
-              : String(value ?? "\u2014")}
-          </span>
-        </div>
-      ))}
+      {Object.entries(obj).map(([key, value]) => {
+        // Render source code fields with CodeBlock
+        if (key === "source" && typeof value === "string" && value) {
+          const startLine = (obj.line_number as number) || (obj.start_line as number) || 1;
+          return (
+            <div key={key} className="space-y-1">
+              <span className="text-primary font-medium">{key}:</span>
+              <CodeBlock code={value} startLine={startLine} maxHeight="max-h-64" />
+            </div>
+          );
+        }
+
+        // Render nested arrays recursively
+        if (Array.isArray(value)) {
+          if (value.length === 0) {
+            return (
+              <div key={key} className="flex gap-2">
+                <span className="text-primary font-medium shrink-0">{key}:</span>
+                <span className="text-muted-foreground">[]</span>
+              </div>
+            );
+          }
+          return (
+            <div key={key} className="space-y-1">
+              <span className="text-primary font-medium">{key}:</span>
+              <div className="ml-4 space-y-2">
+                {value.map((item, i) => (
+                  <div key={i} className="p-3 rounded border border-border text-sm font-mono whitespace-pre-wrap break-all">
+                    {typeof item === "object" && item !== null
+                      ? <ObjectView obj={item as Record<string, unknown>} />
+                      : String(item)}
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        }
+
+        // Render nested objects recursively
+        if (typeof value === "object" && value !== null) {
+          return (
+            <div key={key} className="space-y-1">
+              <span className="text-primary font-medium">{key}:</span>
+              <div className="ml-4 p-3 rounded border border-border text-sm font-mono whitespace-pre-wrap break-all">
+                <ObjectView obj={value as Record<string, unknown>} />
+              </div>
+            </div>
+          );
+        }
+
+        return (
+          <div key={key} className="flex gap-2">
+            <span className="text-primary font-medium shrink-0">{key}:</span>
+            <span className="text-muted-foreground break-all">
+              {String(value ?? "\u2014")}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }

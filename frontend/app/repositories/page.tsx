@@ -1,12 +1,11 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
@@ -14,217 +13,357 @@ import {
   listRepositories,
   deleteRepository,
   ingestGithub,
-  ingestRepository,
+  getRepositoryStats,
+  type RepositoryStatsResponse,
+  type RepositoryStatistics,
 } from "@/lib/api";
 
-interface Repo {
+interface Repository {
   id: string;
   name?: string;
   repo_name?: string;
   owner?: string;
   username?: string;
-  file_count?: number;
-  language?: string;
-  [key: string]: unknown;
 }
 
 export default function RepositoriesPage() {
-  const [repos, setRepos] = useState<Repo[]>([]);
-  const [loadingRepos, setLoadingRepos] = useState(true);
-  const [ingesting, setIngesting] = useState(false);
+  // Repository list state
+  const [repositories, setRepositories] = useState<Repository[]>([]);
+  const [isLoadingRepos, setIsLoadingRepos] = useState(true);
 
-  // GitHub form
-  const [ghOwner, setGhOwner] = useState("");
-  const [ghRepo, setGhRepo] = useState("");
-  const [ghBranch, setGhBranch] = useState("");
-  const [ghClear, setGhClear] = useState(false);
+  // Stats state
+  const [repoStats, setRepoStats] = useState<Record<string, RepositoryStatistics>>({});
+  const [loadingStats, setLoadingStats] = useState<Record<string, boolean>>({});
 
-  // Local form
-  const [localUrl, setLocalUrl] = useState("");
-  const [localUsername, setLocalUsername] = useState("");
-  const [localRepoName, setLocalRepoName] = useState("");
-  const [localClear, setLocalClear] = useState(false);
+  // Ingestion form state
+  const [githubUrl, setGithubUrl] = useState("");
+  const [owner, setOwner] = useState("");
+  const [repoName, setRepoName] = useState("");
+  const [branch, setBranch] = useState("");
+  const [clearExisting, setClearExisting] = useState(false);
+  const [isIngesting, setIsIngesting] = useState(false);
 
-  const loadRepos = useCallback(async () => {
+  // Parse GitHub URL to extract owner and repo
+  function parseGithubUrl(url: string): { owner: string; repo: string } | null {
+    try {
+      const cleanUrl = url.trim().replace(".git", "");
+      const match = cleanUrl.match(/github\.com\/([^/]+)\/([^/]+)/i);
+      if (!match) return null;
+      return { owner: match[1], repo: match[2] };
+    } catch {
+      return null;
+    }
+  }
+
+  // Fetch repository statistics
+  async function fetchRepositoryStats(repo: Repository) {
+    const repoOwner = repo.owner ?? repo.username;
+    const repoNameVal = repo.name ?? repo.repo_name;
+
+    if (!repoOwner || !repoNameVal) {
+      console.warn("Missing owner or name for repo:", repo);
+      return;
+    }
+
+    const key = repo.id;
+    console.log(`📊 Fetching stats for: ${repoOwner}/${repoNameVal}`);
+
+    setLoadingStats((prev) => ({ ...prev, [key]: true }));
+
+    try {
+      const response: RepositoryStatsResponse = await getRepositoryStats(
+        repoOwner,
+        repoNameVal
+      );
+      console.log(`✅ Stats loaded for ${repoOwner}/${repoNameVal}:`, response);
+
+      setRepoStats((prev) => ({
+        ...prev,
+        [key]: response.statistics,
+      }));
+    } catch (error) {
+      console.error(`❌ Failed to load stats for ${repoOwner}/${repoNameVal}:`, error);
+      toast.error(`Failed to load stats for ${repoOwner}/${repoNameVal}`);
+    } finally {
+      setLoadingStats((prev) => ({ ...prev, [key]: false }));
+    }
+  }
+
+  // Load all repositories and their stats
+  async function loadRepositories() {
+    setIsLoadingRepos(true);
     try {
       const data = await listRepositories();
-      const raw: Repo[] = Array.isArray(data) ? data : data?.repositories ?? [];
-      setRepos(raw.filter((r) => r.id));
-    } catch {
+      const repoList: Repository[] = Array.isArray(data) ? data : data?.repositories ?? [];
+
+      console.log(`📚 Loaded ${repoList.length} repositories:`, repoList);
+      setRepositories(repoList);
+
+      // Fetch stats for each repository
+      for (const repo of repoList) {
+        fetchRepositoryStats(repo);
+      }
+    } catch (error) {
+      console.error("❌ Failed to load repositories:", error);
       toast.error("Failed to load repositories");
     } finally {
-      setLoadingRepos(false);
+      setIsLoadingRepos(false);
     }
-  }, []);
+  }
 
-  useEffect(() => {
-    loadRepos();
-  }, [loadRepos]);
+  // Handle GitHub repository ingestion
+  async function handleIngest() {
+    let finalOwner = owner;
+    let finalRepo = repoName;
 
-  const handleGithubIngest = async () => {
-    if (!ghOwner || !ghRepo) return;
-    setIngesting(true);
+    // If URL is provided, parse it
+    if (githubUrl) {
+      const parsed = parseGithubUrl(githubUrl);
+      if (!parsed) {
+        toast.error("Invalid GitHub URL");
+        return;
+      }
+      finalOwner = parsed.owner;
+      finalRepo = parsed.repo;
+    }
+
+    if (!finalOwner || !finalRepo) {
+      toast.error("Please provide owner and repository name");
+      return;
+    }
+
+    setIsIngesting(true);
     try {
       await ingestGithub({
-        owner: ghOwner,
-        repo_name: ghRepo,
-        branch: ghBranch || undefined,
-        clear_existing: ghClear,
+        owner: finalOwner,
+        repo_name: finalRepo,
+        branch: branch || undefined,
+        clear_existing: clearExisting,
       });
-      toast.success("Repository ingested successfully");
-      setGhOwner("");
-      setGhRepo("");
-      setGhBranch("");
-      loadRepos();
-    } catch (e) {
-      toast.error(`Ingestion failed: ${e instanceof Error ? e.message : "Unknown error"}`);
-    } finally {
-      setIngesting(false);
-    }
-  };
 
-  const handleLocalIngest = async () => {
-    if (!localUrl || !localUsername || !localRepoName) return;
-    setIngesting(true);
-    try {
-      await ingestRepository({
-        repo_url: localUrl,
-        username: localUsername,
-        repo_name: localRepoName,
-        clear_existing: localClear,
-      });
-      toast.success("Repository ingested successfully");
-      setLocalUrl("");
-      setLocalUsername("");
-      setLocalRepoName("");
-      loadRepos();
-    } catch (e) {
-      toast.error(`Ingestion failed: ${e instanceof Error ? e.message : "Unknown error"}`);
-    } finally {
-      setIngesting(false);
-    }
-  };
+      toast.success(`Successfully ingested ${finalOwner}/${finalRepo}`);
 
-  const handleDelete = async (id: string) => {
+      // Reset form
+      setGithubUrl("");
+      setOwner("");
+      setRepoName("");
+      setBranch("");
+      setClearExisting(false);
+
+      // Reload repositories
+      loadRepositories();
+    } catch (error) {
+      console.error("❌ Ingestion failed:", error);
+      toast.error(
+        `Ingestion failed: ${error instanceof Error ? error.message : "Unknown error"}`
+      );
+    } finally {
+      setIsIngesting(false);
+    }
+  }
+
+  // Handle repository deletion
+  async function handleDelete(repoId: string) {
+    if (!confirm("Are you sure you want to delete this repository?")) {
+      return;
+    }
+
     try {
-      await deleteRepository(id);
-      toast.success("Repository deleted");
-      loadRepos();
-    } catch {
+      await deleteRepository(repoId);
+      toast.success("Repository deleted successfully");
+      loadRepositories();
+    } catch (error) {
+      console.error("❌ Failed to delete repository:", error);
       toast.error("Failed to delete repository");
     }
-  };
+  }
+
+  // Load repositories on mount
+  useEffect(() => {
+    loadRepositories();
+  }, []);
 
   return (
-    <div className="max-w-4xl mx-auto space-y-8">
-      <h1 className="text-2xl font-bold">Repositories</h1>
+    <div className="container py-8 space-y-6 max-w-6xl mx-auto">
+      <div>
+        <h1 className="text-3xl font-bold">Repositories</h1>
+        <p className="text-muted-foreground mt-2">
+          Manage and ingest repositories for code analysis
+        </p>
+      </div>
 
-      {/* Ingest Section */}
+      {/* Ingestion Form */}
       <Card>
         <CardHeader>
-          <CardTitle>Ingest New Repository</CardTitle>
+          <CardTitle>Ingest GitHub Repository</CardTitle>
         </CardHeader>
-        <CardContent>
-          <Tabs defaultValue="github">
-            <TabsList>
-              <TabsTrigger value="github">GitHub</TabsTrigger>
-              <TabsTrigger value="local">Local Path</TabsTrigger>
-            </TabsList>
+        <CardContent className="space-y-4">
+          {/* GitHub URL Input */}
+          <div className="space-y-2">
+            <Label htmlFor="github-url">GitHub Repository URL</Label>
+            <Input
+              id="github-url"
+              placeholder="https://github.com/owner/repository"
+              value={githubUrl}
+              onChange={(e) => setGithubUrl(e.target.value)}
+              disabled={isIngesting}
+            />
+          </div>
 
-            <TabsContent value="github" className="space-y-4 pt-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label>Owner</Label>
-                  <Input placeholder="e.g. facebook" value={ghOwner} onChange={(e) => setGhOwner(e.target.value)} />
-                </div>
-                <div className="space-y-2">
-                  <Label>Repository Name</Label>
-                  <Input placeholder="e.g. react" value={ghRepo} onChange={(e) => setGhRepo(e.target.value)} />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label>Branch (optional)</Label>
-                  <Input placeholder="main" value={ghBranch} onChange={(e) => setGhBranch(e.target.value)} />
-                </div>
-                <div className="flex items-center gap-2 pt-6">
-                  <Switch checked={ghClear} onCheckedChange={setGhClear} />
-                  <Label>Clear existing data</Label>
-                </div>
-              </div>
-              <Button onClick={handleGithubIngest} disabled={ingesting || !ghOwner || !ghRepo}>
-                {ingesting ? "Ingesting..." : "Ingest from GitHub"}
-              </Button>
-            </TabsContent>
+          <div className="relative">
+            <div className="absolute inset-0 flex items-center">
+              <span className="w-full border-t" />
+            </div>
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="bg-background px-2 text-muted-foreground">Or</span>
+            </div>
+          </div>
 
-            <TabsContent value="local" className="space-y-4 pt-4">
-              <div className="space-y-2">
-                <Label>Repository URL / Path</Label>
-                <Input placeholder="/path/to/repo or https://..." value={localUrl} onChange={(e) => setLocalUrl(e.target.value)} />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label>Username</Label>
-                  <Input placeholder="owner" value={localUsername} onChange={(e) => setLocalUsername(e.target.value)} />
-                </div>
-                <div className="space-y-2">
-                  <Label>Repository Name</Label>
-                  <Input placeholder="my-repo" value={localRepoName} onChange={(e) => setLocalRepoName(e.target.value)} />
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <Switch checked={localClear} onCheckedChange={setLocalClear} />
-                <Label>Clear existing data</Label>
-              </div>
-              <Button onClick={handleLocalIngest} disabled={ingesting || !localUrl || !localUsername || !localRepoName}>
-                {ingesting ? "Ingesting..." : "Ingest Repository"}
-              </Button>
-            </TabsContent>
-          </Tabs>
+          {/* Manual Owner/Repo Input */}
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="owner">Owner</Label>
+              <Input
+                id="owner"
+                placeholder="Pavel401"
+                value={owner}
+                onChange={(e) => setOwner(e.target.value)}
+                disabled={isIngesting}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="repo-name">Repository Name</Label>
+              <Input
+                id="repo-name"
+                placeholder="FinanceBro"
+                value={repoName}
+                onChange={(e) => setRepoName(e.target.value)}
+                disabled={isIngesting}
+              />
+            </div>
+          </div>
+
+          {/* Branch Input */}
+          <div className="space-y-2">
+            <Label htmlFor="branch">Branch (optional)</Label>
+            <Input
+              id="branch"
+              placeholder="main"
+              value={branch}
+              onChange={(e) => setBranch(e.target.value)}
+              disabled={isIngesting}
+            />
+          </div>
+
+          {/* Clear Existing Switch */}
+          <div className="flex items-center gap-2">
+            <Switch
+              id="clear-existing"
+              checked={clearExisting}
+              onCheckedChange={setClearExisting}
+              disabled={isIngesting}
+            />
+            <Label htmlFor="clear-existing">Clear existing data</Label>
+          </div>
+
+          {/* Ingest Button */}
+          <Button
+            onClick={handleIngest}
+            disabled={isIngesting || (!githubUrl && (!owner || !repoName))}
+            className="w-full"
+          >
+            {isIngesting ? "Ingesting..." : "Ingest Repository"}
+          </Button>
         </CardContent>
       </Card>
 
       {/* Repository List */}
       <Card>
         <CardHeader>
-          <CardTitle>Ingested Repositories</CardTitle>
+          <CardTitle>Your Repositories ({repositories.length})</CardTitle>
         </CardHeader>
         <CardContent>
-          {loadingRepos ? (
-            <div className="space-y-3">
-              {[1, 2, 3].map((i) => (
-                <Skeleton key={i} className="h-16 w-full" />
-              ))}
+          {isLoadingRepos ? (
+            <div className="space-y-4">
+              <Skeleton className="h-24 w-full" />
+              <Skeleton className="h-24 w-full" />
             </div>
-          ) : repos.length === 0 ? (
-            <p className="text-muted-foreground text-sm">No repositories ingested yet.</p>
+          ) : repositories.length === 0 ? (
+            <div className="text-center py-12 text-muted-foreground">
+              <p>No repositories found</p>
+              <p className="text-sm mt-2">Ingest a repository to get started</p>
+            </div>
           ) : (
-            <div className="space-y-3">
-              {repos.map((repo) => (
-                <div
-                  key={repo.id}
-                  className="flex items-center justify-between p-4 rounded-lg border border-border"
-                >
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium">
-                        {repo.owner ?? repo.username}/{repo.name ?? repo.repo_name}
-                      </span>
-                      {repo.language && <Badge variant="secondary">{repo.language}</Badge>}
-                    </div>
-                    {repo.file_count != null && (
-                      <p className="text-sm text-muted-foreground">{repo.file_count} files</p>
-                    )}
-                  </div>
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    onClick={() => handleDelete(repo.id)}
+            <div className="space-y-4">
+              {repositories.map((repo) => {
+                const repoOwner = repo.owner ?? repo.username;
+                const repoNameVal = repo.name ?? repo.repo_name;
+                const stats = repoStats[repo.id];
+                const isLoadingStats = loadingStats[repo.id];
+
+                return (
+                  <div
+                    key={repo.id}
+                    className="flex items-start justify-between p-4 rounded-lg border bg-card hover:bg-accent/50 transition-colors"
                   >
-                    Delete
-                  </Button>
-                </div>
-              ))}
+                    <div className="space-y-3 flex-1">
+                      {/* Repository Name */}
+                      <div>
+                        <h3 className="font-semibold text-lg">
+                          {repoOwner}/{repoNameVal}
+                        </h3>
+                        <p className="text-sm text-muted-foreground">{repo.id}</p>
+                      </div>
+
+                      {/* Statistics */}
+                      {isLoadingStats ? (
+                        <Skeleton className="h-8 w-full max-w-md" />
+                      ) : stats ? (
+                        <div className="flex flex-wrap gap-2">
+                          <Badge variant="outline" className="gap-1">
+                            <span>📁</span>
+                            <span>{stats.files.toLocaleString()} files</span>
+                          </Badge>
+                          <Badge variant="outline" className="gap-1">
+                            <span>🧱</span>
+                            <span>{stats.classes.toLocaleString()} classes</span>
+                          </Badge>
+                          <Badge variant="outline" className="gap-1">
+                            <span>⚙️</span>
+                            <span>{stats.functions.toLocaleString()} functions</span>
+                          </Badge>
+                          <Badge variant="outline" className="gap-1">
+                            <span>📏</span>
+                            <span>{stats.lines.toLocaleString()} lines</span>
+                          </Badge>
+                          {stats.languages && stats.languages.length > 0 && (
+                            <>
+                              {stats.languages.map((lang) => (
+                                <Badge key={lang} variant="secondary">
+                                  {lang}
+                                </Badge>
+                              ))}
+                            </>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="text-sm text-muted-foreground">
+                          Stats not available
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Delete Button */}
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => handleDelete(repo.id)}
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                );
+              })}
             </div>
           )}
         </CardContent>
