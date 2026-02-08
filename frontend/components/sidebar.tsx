@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { BugViperLogo } from "./logo";
+import { useAuth } from "@/lib/auth-context";
 
 const nav = [
   { href: "/", label: "Dashboard", icon: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1" },
@@ -12,6 +13,7 @@ const nav = [
 
 export function Sidebar() {
   const pathname = usePathname();
+  const { user, signOut } = useAuth();
 
   return (
     <aside className="fixed left-0 top-0 h-screen w-56 bg-sidebar border-r border-sidebar-border flex flex-col">
@@ -40,6 +42,42 @@ export function Sidebar() {
           );
         })}
       </nav>
+
+      {user && (
+        <div className="border-t border-sidebar-border px-3 py-4 space-y-3">
+          <div className="flex items-center gap-3">
+            {user.photoURL ? (
+              <img
+                src={user.photoURL}
+                alt=""
+                className="w-8 h-8 rounded-full"
+                referrerPolicy="no-referrer"
+              />
+            ) : (
+              <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center text-xs font-medium text-primary">
+                {(user.displayName?.[0] || user.email?.[0] || "?").toUpperCase()}
+              </div>
+            )}
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium truncate">
+                {user.displayName || "User"}
+              </p>
+              <p className="text-xs text-muted-foreground truncate">
+                {user.email}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={signOut}
+            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground rounded-md transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+            </svg>
+            Sign out
+          </button>
+        </div>
+      )}
     </aside>
   );
 }

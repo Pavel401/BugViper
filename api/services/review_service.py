@@ -11,7 +11,7 @@ from db.queries import CodeQueryService
 from deepagent.models.agent_schemas import ContextData
 from deepagent.agent.review_pipeline import run_review
 from ingestion.github_client import GitHubClient
-from lib.diff_parser import parse_unified_diff
+from common.diff_parser import parse_unified_diff
 
 logger = logging.getLogger(__name__)
 

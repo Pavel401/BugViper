@@ -1,15 +1,15 @@
+from dotenv import load_dotenv
 
+# Load environment variables BEFORE any imports that use them (e.g. Firebase)
+load_dotenv()
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
 
-from api.routers import ingestion, query, repository, webhook
+from api.routers import auth, ingestion, query, repository, webhook
+from api.services.firebase_service import firebase_service  # noqa: F401 — init on import
 import uvicorn
-
-# Load environment variables from .env file
-load_dotenv()
 
 
 @asynccontextmanager
@@ -78,10 +78,15 @@ app.include_router(
 )
 
 app.include_router(
-
     webhook.router,
     prefix="/api/v1/webhook",
     tags=["Webhook"]
+)
+
+app.include_router(
+    auth.router,
+    prefix="/api/v1/auth",
+    tags=["Auth"]
 )
 
 

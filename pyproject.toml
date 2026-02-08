@@ -40,6 +40,8 @@ dependencies = [
     "pydantic-ai[openrouter]>=1.47.0",
     "openai>=2.15.0",
     "logfire>=4.19.0",
+    # Firebase
+    "firebase-admin>=6.6.0",
 ]
 
 [project.optional-dependencies]
