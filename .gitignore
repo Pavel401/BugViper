@@ -69,3 +69,5 @@ ngrok.log
 api.log
 
 frontend.log
+
+service.json
