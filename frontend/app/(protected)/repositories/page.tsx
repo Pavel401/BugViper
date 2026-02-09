@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,9 +13,11 @@ import {
   listRepositories,
   deleteRepository,
   ingestGithub,
+  getIngestionJobStatus,
   getRepositoryStats,
   type RepositoryStatsResponse,
   type RepositoryStatistics,
+  type JobStatusResponse,
 } from "@/lib/api";
 
 interface Repository {
@@ -41,7 +43,11 @@ export default function RepositoriesPage() {
   const [repoName, setRepoName] = useState("");
   const [branch, setBranch] = useState("");
   const [clearExisting, setClearExisting] = useState(false);
-  const [isIngesting, setIsIngesting] = useState(false);
+
+  // Async job state
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [activeJobStatus, setActiveJobStatus] = useState<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Parse GitHub URL to extract owner and repo
   function parseGithubUrl(url: string): { owner: string; repo: string } | null {
@@ -66,7 +72,6 @@ export default function RepositoriesPage() {
     }
 
     const key = repo.id;
-    console.log(`📊 Fetching stats for: ${repoOwner}/${repoNameVal}`);
 
     setLoadingStats((prev) => ({ ...prev, [key]: true }));
 
@@ -75,15 +80,13 @@ export default function RepositoriesPage() {
         repoOwner,
         repoNameVal
       );
-      console.log(`✅ Stats loaded for ${repoOwner}/${repoNameVal}:`, response);
 
       setRepoStats((prev) => ({
         ...prev,
         [key]: response.statistics,
       }));
     } catch (error) {
-      console.error(`❌ Failed to load stats for ${repoOwner}/${repoNameVal}:`, error);
-      toast.error(`Failed to load stats for ${repoOwner}/${repoNameVal}`);
+      console.error(`Failed to load stats for ${repoOwner}/${repoNameVal}:`, error);
     } finally {
       setLoadingStats((prev) => ({ ...prev, [key]: false }));
     }
@@ -96,7 +99,6 @@ export default function RepositoriesPage() {
       const data = await listRepositories();
       const repoList: Repository[] = Array.isArray(data) ? data : data?.repositories ?? [];
 
-      console.log(`📚 Loaded ${repoList.length} repositories:`, repoList);
       setRepositories(repoList);
 
       // Fetch stats for each repository
@@ -104,12 +106,49 @@ export default function RepositoriesPage() {
         fetchRepositoryStats(repo);
       }
     } catch (error) {
-      console.error("❌ Failed to load repositories:", error);
+      console.error("Failed to load repositories:", error);
       toast.error("Failed to load repositories");
     } finally {
       setIsLoadingRepos(false);
     }
   }
+
+  // Poll job status
+  useEffect(() => {
+    if (!activeJobId) return;
+
+    async function poll() {
+      try {
+        const job: JobStatusResponse = await getIngestionJobStatus(activeJobId!);
+        setActiveJobStatus(job.status);
+
+        if (job.status === "completed") {
+          setActiveJobId(null);
+          setActiveJobStatus(null);
+          toast.success(
+            `Successfully ingested ${job.owner}/${job.repo_name}`
+          );
+          loadRepositories();
+        } else if (job.status === "failed") {
+          setActiveJobId(null);
+          setActiveJobStatus(null);
+          toast.error(
+            `Ingestion failed: ${job.error_message || "Unknown error"}`
+          );
+        }
+      } catch (error) {
+        console.error("Failed to poll job status:", error);
+      }
+    }
+
+    // Poll immediately, then every 3 seconds
+    poll();
+    pollRef.current = setInterval(poll, 3000);
+
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [activeJobId]);
 
   // Handle GitHub repository ingestion
   async function handleIngest() {
@@ -132,16 +171,19 @@ export default function RepositoriesPage() {
       return;
     }
 
-    setIsIngesting(true);
+    setActiveJobStatus("submitting");
     try {
-      await ingestGithub({
+      const response = await ingestGithub({
         owner: finalOwner,
         repo_name: finalRepo,
         branch: branch || undefined,
         clear_existing: clearExisting,
       });
 
-      toast.success(`Successfully ingested ${finalOwner}/${finalRepo}`);
+      setActiveJobId(response.job_id);
+      setActiveJobStatus(response.status);
+
+      toast.success(`Ingestion queued for ${finalOwner}/${finalRepo}`);
 
       // Reset form
       setGithubUrl("");
@@ -149,16 +191,12 @@ export default function RepositoriesPage() {
       setRepoName("");
       setBranch("");
       setClearExisting(false);
-
-      // Reload repositories
-      loadRepositories();
     } catch (error) {
-      console.error("❌ Ingestion failed:", error);
+      console.error("Ingestion request failed:", error);
+      setActiveJobStatus(null);
       toast.error(
         `Ingestion failed: ${error instanceof Error ? error.message : "Unknown error"}`
       );
-    } finally {
-      setIsIngesting(false);
     }
   }
 
@@ -173,9 +211,19 @@ export default function RepositoriesPage() {
       toast.success("Repository deleted successfully");
       loadRepositories();
     } catch (error) {
-      console.error("❌ Failed to delete repository:", error);
+      console.error("Failed to delete repository:", error);
       toast.error("Failed to delete repository");
     }
+  }
+
+  // Derive button state
+  const isIngesting = activeJobId !== null || activeJobStatus === "submitting";
+
+  function ingestButtonLabel(): string {
+    if (activeJobStatus === "submitting") return "Submitting...";
+    if (activeJobStatus === "pending" || activeJobStatus === "dispatched") return "Queuing...";
+    if (activeJobStatus === "running") return "Running...";
+    return "Ingest Repository";
   }
 
   // Load repositories on mount
@@ -272,7 +320,7 @@ export default function RepositoriesPage() {
             disabled={isIngesting || (!githubUrl && (!owner || !repoName))}
             className="w-full"
           >
-            {isIngesting ? "Ingesting..." : "Ingest Repository"}
+            {ingestButtonLabel()}
           </Button>
         </CardContent>
       </Card>
@@ -299,7 +347,7 @@ export default function RepositoriesPage() {
                 const repoOwner = repo.owner ?? repo.username;
                 const repoNameVal = repo.name ?? repo.repo_name;
                 const stats = repoStats[repo.id];
-                const isLoadingStats = loadingStats[repo.id];
+                const isLoadingStatsForRepo = loadingStats[repo.id];
 
                 return (
                   <div
@@ -316,24 +364,20 @@ export default function RepositoriesPage() {
                       </div>
 
                       {/* Statistics */}
-                      {isLoadingStats ? (
+                      {isLoadingStatsForRepo ? (
                         <Skeleton className="h-8 w-full max-w-md" />
                       ) : stats ? (
                         <div className="flex flex-wrap gap-2">
                           <Badge variant="outline" className="gap-1">
-                            <span>📁</span>
                             <span>{stats.files.toLocaleString()} files</span>
                           </Badge>
                           <Badge variant="outline" className="gap-1">
-                            <span>🧱</span>
                             <span>{stats.classes.toLocaleString()} classes</span>
                           </Badge>
                           <Badge variant="outline" className="gap-1">
-                            <span>⚙️</span>
                             <span>{stats.functions.toLocaleString()} functions</span>
                           </Badge>
                           <Badge variant="outline" className="gap-1">
-                            <span>📏</span>
                             <span>{stats.lines.toLocaleString()} lines</span>
                           </Badge>
                           {stats.languages && stats.languages.length > 0 && (

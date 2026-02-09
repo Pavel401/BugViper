@@ -1382,7 +1382,7 @@ class CodeQueryService:
         Returns:
             Dict with affected_symbols, callers, imports, dependencies, hierarchy
         """
-        from ingestion.code_search import CodeFinder
+        from api.services.code_search import CodeFinder
         
         code_finder = CodeFinder(self.db)
         

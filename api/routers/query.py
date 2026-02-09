@@ -10,7 +10,7 @@ import os
 from db.client import Neo4jClient
 from db.queries import CodeQueryService
 from api.dependencies import get_neo4j_client
-from ingestion.code_search import CodeFinder
+from api.services.code_search import CodeFinder
 
 router = APIRouter()
 
@@ -551,9 +551,6 @@ async def list_indexed_repositories(
         raise HTTPException(status_code=500, detail=f"Failed to list repositories: {str(e)}")
 
 
-# =========================================================================
-# Simple Language Query Endpoints (Alternative to Advanced_language_query)
-# =========================================================================
 
 @router.get("/language/{language}/symbols")
 async def get_language_symbols(

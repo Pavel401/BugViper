@@ -31,3 +31,28 @@ class QueryResponse(BaseModel):
     """Basic response schema for queries."""
     message: str
     data: Optional[dict] = None
+
+
+class IngestionJobResponse(BaseModel):
+    """Returned immediately when an ingestion job is created."""
+
+    job_id: str
+    status: str
+    message: str
+    poll_url: str
+
+
+class JobStatusResponse(BaseModel):
+    """Full job status returned by the polling endpoint."""
+
+    job_id: str
+    owner: str
+    repo_name: str
+    branch: Optional[str] = None
+    status: str
+    created_at: str
+    updated_at: str
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    stats: Optional[dict] = None
+    error_message: Optional[str] = None

@@ -11,7 +11,7 @@ import { getGraphStats, getGitHubRepos, type GitHubRepo } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 
 export default function Dashboard() {
-  const { user, githubToken } = useAuth();
+  const { user } = useAuth();
   const [stats, setStats] = useState<Record<string, number> | null>(null);
   const [loading, setLoading] = useState(true);
   const [repos, setRepos] = useState<GitHubRepo[]>([]);
@@ -25,14 +25,14 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    if (!githubToken) return;
+    if (!user) return;
     let cancelled = false;
-    getGitHubRepos(githubToken)
+    getGitHubRepos()
       .then((data) => { if (!cancelled) setRepos(data); })
       .catch(() => { if (!cancelled) setRepos([]); })
       .finally(() => { if (!cancelled) setReposLoading(false); });
     return () => { cancelled = true; };
-  }, [githubToken]);
+  }, [user]);
 
   const statCards = [
     { label: "Repositories", key: "repositories", fallback: "total_repositories" },
