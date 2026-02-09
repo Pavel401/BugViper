@@ -34,6 +34,7 @@ cleanup() {
 
     # Kill any remaining processes
     pkill -f "uvicorn api.app:app" 2>/dev/null
+    pkill -f "uvicorn ingestion_service.app:app" 2>/dev/null
     pkill -f "next dev" 2>/dev/null
     pkill -f "ngrok http" 2>/dev/null
 
@@ -53,7 +54,7 @@ else
 fi
 
 # Start API
-echo -e "${BLUE}[1/3] Starting API server...${NC}"
+echo -e "${BLUE}[1/4] Starting API server...${NC}"
 cd "$PROJECT_ROOT"
 
 source .venv/bin/activate && uvicorn api.app:app --host 0.0.0.0 --port 8000 --reload > "$PROJECT_ROOT/logs/api.log" 2>&1 &
@@ -62,8 +63,18 @@ echo $API_PID >> "$PID_FILE"
 echo -e "${GREEN}✓ API started (PID: $API_PID)${NC}"
 echo -e "  Log file: logs/api.log"
 
+# Start Ingestion Service
+echo -e "\n${BLUE}[2/4] Starting Ingestion Service...${NC}"
+cd "$PROJECT_ROOT"
+
+source .venv/bin/activate && uvicorn ingestion_service.app:app --host 0.0.0.0 --port 8080 --reload > "$PROJECT_ROOT/logs/ingestion.log" 2>&1 &
+INGESTION_PID=$!
+echo $INGESTION_PID >> "$PID_FILE"
+echo -e "${GREEN}✓ Ingestion Service started (PID: $INGESTION_PID)${NC}"
+echo -e "  Log file: logs/ingestion.log"
+
 # Start Frontend
-echo -e "\n${BLUE}[2/3] Starting Frontend...${NC}"
+echo -e "\n${BLUE}[3/4] Starting Frontend...${NC}"
 cd "$PROJECT_ROOT/frontend"
 npm run dev > "$PROJECT_ROOT/logs/frontend.log" 2>&1 &
 FRONTEND_PID=$!
@@ -89,7 +100,7 @@ done
 
 # Start ngrok if available
 if [ "$NGROK_AVAILABLE" = true ]; then
-    echo -e "\n${BLUE}[3/3] Starting ngrok tunnel...${NC}"
+    echo -e "\n${BLUE}[4/4] Starting ngrok tunnel...${NC}"
     # Use static domain for consistent webhook URLs
     ngrok http 8000 --domain=aileen-ferny-uncoquettishly.ngrok-free.dev > "$PROJECT_ROOT/logs/ngrok.log" 2>&1 &
     NGROK_PID=$!
@@ -111,7 +122,7 @@ if [ "$NGROK_AVAILABLE" = true ]; then
         echo -e "\r  ${YELLOW}Could not retrieve ngrok URL${NC}"
     fi
 else
-    echo -e "\n${YELLOW}[3/3] Skipping ngrok (not installed)${NC}"
+    echo -e "\n${YELLOW}[4/4] Skipping ngrok (not installed)${NC}"
 fi
 
 # Display summary
@@ -123,6 +134,8 @@ echo -e "${BLUE}URLs:${NC}"
 echo -e "  Frontend:    ${YELLOW}http://localhost:3000${NC}"
 echo -e "  API:         ${YELLOW}http://localhost:8000${NC}"
 echo -e "  API Docs:    ${YELLOW}http://localhost:8000/docs${NC}"
+echo -e "  Ingestion:   ${YELLOW}http://localhost:8080${NC}"
+echo -e "  Ingest Docs: ${YELLOW}http://localhost:8080/docs${NC}"
 
 if [ "$NGROK_AVAILABLE" = true ] && [ -n "$NGROK_URL" ]; then
     echo -e "  Ngrok:       ${YELLOW}$NGROK_URL${NC}"
@@ -131,6 +144,7 @@ fi
 
 echo -e "\n${BLUE}View Logs:${NC}"
 echo -e "  API:         ${YELLOW}tail -f logs/api.log${NC}"
+echo -e "  Ingestion:   ${YELLOW}tail -f logs/ingestion.log${NC}"
 echo -e "  Frontend:    ${YELLOW}tail -f logs/frontend.log${NC}"
 if [ "$NGROK_AVAILABLE" = true ]; then
     echo -e "  Ngrok:       ${YELLOW}tail -f logs/ngrok.log${NC}"
@@ -139,6 +153,7 @@ echo -e "  All:         ${YELLOW}tail -f logs/*.log${NC}"
 
 echo -e "\n${BLUE}Process IDs:${NC}"
 echo -e "  API:         ${YELLOW}$API_PID${NC}"
+echo -e "  Ingestion:   ${YELLOW}$INGESTION_PID${NC}"
 echo -e "  Frontend:    ${YELLOW}$FRONTEND_PID${NC}"
 if [ "$NGROK_AVAILABLE" = true ]; then
     echo -e "  Ngrok:       ${YELLOW}$NGROK_PID${NC}"

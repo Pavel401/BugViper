@@ -1,43 +1,12 @@
 """BugViperFirebaseService - Firebase Admin SDK + Firestore user operations."""
 
-import json
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Optional
 
-import firebase_admin
-from firebase_admin import credentials, firestore
+from common.firebase_init import _initialize_firebase
 
 logger = logging.getLogger(__name__)
-
-
-# ── Firebase Initialization ──────────────────────────────────────────────────
-
-
-def _get_firebase_credentials():
-    """Parse SERVICE_FILE_LOC as a JSON string or file path."""
-    cert_value = os.environ.get("SERVICE_FILE_LOC", "")
-    if cert_value.strip().startswith("{"):
-        return credentials.Certificate(json.loads(cert_value))
-    return credentials.Certificate(cert_value)
-
-
-def _initialize_firebase():
-    """Initialize the Firebase Admin SDK (idempotent)."""
-    if firebase_admin._apps:
-        return firestore.client()
-
-    cert_value = os.environ.get("SERVICE_FILE_LOC", "")
-    if cert_value:
-        cred = _get_firebase_credentials()
-        firebase_admin.initialize_app(cred)
-        logger.info("Firebase initialized with explicit credentials")
-    else:
-        firebase_admin.initialize_app()
-        logger.info("Firebase initialized with default credentials (Cloud Run)")
-
-    return firestore.client()
 
 
 # ── Service Class ─────────────────────────────────────────────────────────────
@@ -180,6 +149,16 @@ class BugViperFirebaseService:
             "photoURL": data.get("photoURL"),
             "createdAt": data.get("createdAt"),
         }
+
+    def get_github_token(self, uid: str) -> Optional[str]:
+        """
+        Retrieve the stored GitHub access token for a user.
+        Returns None if user doc doesn't exist or has no token.
+        """
+        doc = self._db.collection("users").document(uid).get()
+        if not doc.exists:
+            return None
+        return doc.to_dict().get("githubAccessToken")
 
 
 # Module-level convenience instance (triggers Firebase init on import)

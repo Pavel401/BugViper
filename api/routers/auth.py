@@ -22,9 +22,6 @@ class LoginRequest(BaseModel):
     github_access_token: str
 
 
-class ReposRequest(BaseModel):
-    github_access_token: str
-
 
 class UserProfile(BaseModel):
     uid: str
@@ -89,14 +86,21 @@ def get_me(user: dict = Depends(get_current_user)):
     return UserProfile(**profile)
 
 
-@router.post("/github/repos", response_model=list[GitHubRepo])
-def get_github_repos(body: ReposRequest, user: dict = Depends(get_current_user)):
-    """Fetch the authenticated user's GitHub repositories."""
+@router.get("/github/repos", response_model=list[GitHubRepo])
+def get_github_repos(user: dict = Depends(get_current_user)):
+    """Fetch the authenticated user's GitHub repositories using stored token."""
+    uid = user["uid"]
+    token = firebase_service.get_github_token(uid)
+    if not token:
+        raise HTTPException(
+            status_code=400,
+            detail="No GitHub token found. Please sign in with GitHub first.",
+        )
     try:
-        repos = github_service.fetch_user_repos(body.github_access_token)
+        repos = github_service.fetch_user_repos(token)
         return [GitHubRepo(**r) for r in repos]
     except ValueError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except Exception as exc:
-        logger.exception("Failed to fetch GitHub repos for uid=%s", user.get("uid"))
+        logger.exception("Failed to fetch GitHub repos for uid=%s", uid)
         raise HTTPException(status_code=500, detail="Failed to fetch repositories") from exc
