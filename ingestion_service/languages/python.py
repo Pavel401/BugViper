@@ -8,7 +8,7 @@ import ast
 import logging
 import warnings
 from common import debug_log, info_logger, error_logger, warning_logger, debug_logger
-from ...common.tree_sitter_manager import execute_query
+from common.tree_sitter_manager import execute_query
 
 # Suppress verbose traitlets/nbconvert DEBUG logs
 logging.getLogger('traitlets').setLevel(logging.WARNING)

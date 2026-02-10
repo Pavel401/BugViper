@@ -3,7 +3,7 @@ from typing import Any, Dict, Optional, Tuple
 import re
 
 from common.debug_log import warning_logger
-from ...common.tree_sitter_manager import execute_query
+from common.tree_sitter_manager import execute_query
 
 SWIFT_QUERIES = {
     "functions": """
