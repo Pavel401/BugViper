@@ -3,7 +3,7 @@ from typing import Any, Dict, Optional, Tuple, List
 import re
 
 from common.debug_log import error_logger, warning_logger
-from ...common.tree_sitter_manager import execute_query
+from common.tree_sitter_manager import execute_query
 
 SCALA_QUERIES = {
     "functions": """

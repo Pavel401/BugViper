@@ -64,7 +64,7 @@ def pre_scan_typescript(files: list[Path], parser_wrapper) -> dict:
             warning_logger(f"Tree-sitter pre-scan failed for {path}: {e}")
     return imports_map
 from typing import Dict, Any
-from ...common.tree_sitter_manager import execute_query
+from common.tree_sitter_manager import execute_query
 from .typescript import TypescriptLangTreeSitterParser
 
 class TypescriptLangJSXTreeSitterParser(TypescriptLangTreeSitterParser):

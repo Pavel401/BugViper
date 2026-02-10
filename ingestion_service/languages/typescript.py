@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Dict
 
 from common.debug_log import warning_logger
-from ...common.tree_sitter_manager import execute_query
+from common.tree_sitter_manager import execute_query
 
 TS_QUERIES = {
     "functions": """

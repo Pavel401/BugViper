@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 import re
 from common import debug_log, info_logger, error_logger, warning_logger, debug_logger
-from ...common.tree_sitter_manager import execute_query
+from common.tree_sitter_manager import execute_query
 
 # Reference: https://github.com/tree-sitter/tree-sitter-php/blob/master/queries/tags.scm
 PHP_QUERIES = {

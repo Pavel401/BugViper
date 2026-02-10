@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 import re
 from common import debug_log, info_logger, error_logger, warning_logger, debug_logger
-from ...common.tree_sitter_manager import execute_query
+from common.tree_sitter_manager import execute_query
 
 # --- Helpers to classify JS methods ---
 _GETTER_RE = re.compile(r"^\s*(?:static\s+)?get\b")
