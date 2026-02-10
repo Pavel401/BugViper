@@ -2,12 +2,11 @@
 import logging
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Request
 
 from api.services.cloud_tasks_service import CloudTasksService
 from api.services.ingestion_dispatch import call_ingestion_service
 from api.services.review_service import execute_pr_review
-from common.job_models import IncrementalPRPayload, IncrementalPushPayload
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +17,7 @@ cloud_tasks = CloudTasksService()
 @router.post("/github")
 async def github_webhook(request: Request):
     """Legacy GitHub webhook endpoint (kept for backwards compatibility)."""
+    await request.json()  # Consume body but don't store
     await request.json()  # Consume body but don't store
     event_type = request.headers.get("X-GitHub-Event")
     logger.info(f"Received GitHub webhook: {event_type}")
