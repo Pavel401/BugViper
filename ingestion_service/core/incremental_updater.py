@@ -1,5 +1,3 @@
-# Handle the Code Push (Pull Request Merge or the Direct Push)
-# Incrementally updates the graph without rebuilding from scratch
 
 import asyncio
 import subprocess
