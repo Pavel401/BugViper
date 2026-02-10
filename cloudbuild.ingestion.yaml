@@ -13,7 +13,7 @@ steps:
     args: [
         "run",
         "deploy",
-        "ingestion_service",
+        "ingestion-service",
         "--image",
         "us-central1-docker.pkg.dev/mealai-f58b5/bugviper/ingestion_service:latest",
         "--region",
