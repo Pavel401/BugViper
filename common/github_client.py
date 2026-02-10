@@ -60,8 +60,9 @@ class GitHubClient:
         with open(self.private_key_path, "r") as f:
             self.private_key = f.read()
 
-        # Create GitHub App integration
-        self.integration = GithubIntegration(self.app_id, self.private_key)
+        # Create GitHub App integration (PyGithub 2.x API)
+        app_auth = Auth.AppAuth(self.app_id, self.private_key)
+        self.integration = GithubIntegration(auth=app_auth)
         self._github_cache: Dict[str, Dict[str, Any]] = {}
 
     def _get_github_instance(self, owner: str, repo: str) -> Github:
