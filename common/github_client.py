@@ -320,6 +320,40 @@ class GitHubClient:
 
         return await asyncio.to_thread(_get_files)
 
+    async def get_file_content(self, owner: str, repo: str, path: str, ref: str = None) -> Optional[str]:
+        """
+        Get the content of a file from the repository.
+
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            path: File path relative to repo root
+            ref: Branch, tag, or commit SHA (defaults to repo default branch)
+
+        Returns:
+            File content as string, or None if not found
+        """
+        def _get_content():
+            github = self._get_github_instance(owner, repo)
+            repository = github.get_repo(f"{owner}/{repo}")
+            try:
+                content_file = repository.get_contents(path, ref=ref)
+                return content_file.decoded_content.decode("utf-8")
+            except GithubException:
+                return None
+
+        return await asyncio.to_thread(_get_content)
+
+    async def get_pr_head_ref(self, owner: str, repo: str, pr_number: int) -> str:
+        """Get the head SHA of a pull request."""
+        def _get_ref():
+            github = self._get_github_instance(owner, repo)
+            repository = github.get_repo(f"{owner}/{repo}")
+            pr = repository.get_pull(pr_number)
+            return pr.head.sha
+
+        return await asyncio.to_thread(_get_ref)
+
     async def post_comment(self, owner: str, repo: str, pr_number: int, body: str) -> None:
         """
         Post a comment on a pull request (via issue comments API).
