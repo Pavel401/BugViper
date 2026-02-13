@@ -1,4 +1,3 @@
-"""Format review results into a GitHub PR comment."""
 
 from deepagent.config import config
 from deepagent.models.agent_schemas import ContextData, ReviewResults
@@ -34,7 +33,7 @@ def format_github_comment(
         parts.append("")
 
     # Review findings
-    issues = review_results.issues
+    issues = review_results.issues 
     parts.append("### 🔍 Code Review")
     parts.append("")
     parts.append(f"**Summary**: {review_results.summary}")

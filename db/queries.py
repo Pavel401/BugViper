@@ -1401,19 +1401,16 @@ class CodeQueryService:
 
             # 1. Find affected symbols with FULL source code
             query = """
-            MATCH (f:File)
-            WHERE f.relative_path = $relative_path
-              AND f.path CONTAINS $repo_id
+            MATCH (f:File {repo: $repo_id, path: $file_path})
             WITH f
             MATCH (f)-[:CONTAINS]->(n)
-            WHERE (n:Function OR n:Class OR n:Method)
+            WHERE (n:Function OR n:Class)
               AND n.line_number IS NOT NULL
               AND n.line_number <= $end_line
               AND coalesce(n.end_line, n.line_number) >= $start_line
             RETURN
                 CASE
                     WHEN n:Function THEN 'function'
-                    WHEN n:Method THEN 'method'
                     WHEN n:Class THEN 'class'
                 END as type,
                 n.name as name,
@@ -1421,13 +1418,12 @@ class CodeQueryService:
                 coalesce(n.end_line, n.line_number) as end_line,
                 n.source as source,
                 n.docstring as docstring,
-                f.relative_path as file_path,
-                f.path as absolute_path
+                f.path as file_path
             ORDER BY n.line_number
             """
             records, _, _ = self.db.run_query(query, {
                 "repo_id": repo_id,
-                "relative_path": file_path,
+                "file_path": file_path,
                 "start_line": start_line,
                 "end_line": end_line,
             })
@@ -1448,8 +1444,8 @@ class CodeQueryService:
                 # Use CodeFinder to find who calls this function
                 try:
                     caller_results = code_finder.who_calls_function(
-                        sym["name"], 
-                        sym.get("absolute_path")
+                        sym["name"],
+                        sym.get("file_path")
                     )
                     
                     if caller_results:
@@ -1478,7 +1474,7 @@ class CodeQueryService:
                 try:
                     dep_results = code_finder.what_does_function_call(
                         sym["name"],
-                        sym.get("absolute_path")
+                        sym.get("file_path")
                     )
                     
                     if dep_results:
@@ -1502,11 +1498,9 @@ class CodeQueryService:
 
             # 4. Find imports in the changed file and retrieve imported function sources
             import_query = """
-            MATCH (f:File)
-            WHERE f.relative_path = $relative_path
-              AND f.path CONTAINS $repo_id
+            MATCH (f:File {repo: $repo_id, path: $file_path})
             MATCH (f)-[r:IMPORTS]->(m)
-            RETURN 
+            RETURN
                 r.alias as alias,
                 r.imported_name as imported_name,
                 m.name as module_name,
@@ -1516,7 +1510,7 @@ class CodeQueryService:
             """
             import_records, _, _ = self.db.run_query(import_query, {
                 "repo_id": repo_id,
-                "relative_path": file_path,
+                "file_path": file_path,
             })
             
             for imp in import_records:
@@ -1567,7 +1561,7 @@ class CodeQueryService:
                 try:
                     hierarchy_info = code_finder.find_class_hierarchy(
                         cls["name"],
-                        cls.get("absolute_path")
+                        cls.get("file_path")
                     )
                     
                     if hierarchy_info:
