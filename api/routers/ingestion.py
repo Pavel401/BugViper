@@ -1,4 +1,5 @@
 import logging
+import os
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -9,8 +10,11 @@ from api.models.schemas import (
     IngestionJobResponse,
     JobStatusResponse,
 )
+
+from ingestion_service.core.repo_ingestion_engine import AdvancedIngestionEngine
 from api.services.cloud_tasks_service import CloudTasksService
 from common.job_models import (
+    IngestionJobStats,
     IngestionTaskPayload,
     JobStatus,
 )
@@ -25,7 +29,10 @@ job_tracker = JobTrackerService()
 
 
 @router.post("/github", response_model=IngestionJobResponse)
-async def ingest_github_repository(request: GitHubIngestRequest):
+async def ingest_github_repository(
+    request: GitHubIngestRequest,
+    neo4j_client: Neo4jClient = Depends(get_neo4j_client),
+):
     # Prevent duplicate active jobs for the same repo
     existing = job_tracker.find_active_job(request.owner, request.repo_name)
     if existing:
@@ -45,29 +52,79 @@ async def ingest_github_repository(request: GitHubIngestRequest):
         clear_existing=request.clear_existing,
     )
 
-    # Create Firestore job record
-    job_tracker.create_job(payload)
+    if os.getenv("dev") == "true":
+        # Dev mode: run ingestion locally in-process
+        job_tracker.create_job(payload)
+        job_tracker.update_status(job_id, JobStatus.RUNNING)
 
-    # Dispatch to Cloud Tasks → ingestion service
-    task_name = cloud_tasks.dispatch_ingestion(payload)
-    if task_name:
-        job_tracker.update_status(
-            job_id, JobStatus.DISPATCHED, cloud_task_name=task_name
+        try:
+            engine = AdvancedIngestionEngine(neo4j_client)
+            engine.setup()
+
+            stats = await engine.ingest_github_repository(
+                owner=request.owner,
+                repo_name=request.repo_name,
+                branch=request.branch,
+                clear_existing=request.clear_existing,
+            )
+
+            engine.close()
+
+            job_tracker.update_status(
+                job_id,
+                JobStatus.COMPLETED,
+                stats=IngestionJobStats(
+                    files_processed=stats.files_processed,
+                    files_skipped=stats.files_skipped,
+                    classes_found=stats.classes_found,
+                    functions_found=stats.functions_found,
+                    imports_found=stats.imports_found,
+                    total_lines=stats.total_lines,
+                    errors=stats.errors or [],
+                ),
+            )
+            logger.info("Dev-mode ingestion completed for %s/%s", request.owner, request.repo_name)
+
+        except Exception as exc:
+            logger.exception("Dev-mode ingestion failed for %s/%s", request.owner, request.repo_name)
+            job_tracker.update_status(
+                job_id,
+                JobStatus.FAILED,
+                error_message=f"{type(exc).__name__}: {exc}",
+            )
+            raise HTTPException(status_code=500, detail=str(exc))
+
+        return IngestionJobResponse(
+            job_id=job_id,
+            status=JobStatus.COMPLETED.value,
+            message=f"Ingestion completed for {request.owner}/{request.repo_name} (dev mode)",
+            poll_url=f"/api/v1/ingest/jobs/{job_id}",
         )
+
     else:
-        job_tracker.update_status(
-            job_id,
-            JobStatus.FAILED,
-            error_message="Failed to dispatch Cloud Task",
-        )
-        raise HTTPException(status_code=500, detail="Failed to dispatch ingestion task")
+        # Create Firestore job record
+        job_tracker.create_job(payload)
 
-    return IngestionJobResponse(
-        job_id=job_id,
-        status=JobStatus.PENDING.value,
-        message=f"Ingestion queued for {request.owner}/{request.repo_name}",
-        poll_url=f"/api/v1/ingest/jobs/{job_id}",
-    )
+        # Dispatch to Cloud Tasks → ingestion service
+        task_name = cloud_tasks.dispatch_ingestion(payload)
+        if task_name:
+            job_tracker.update_status(
+                job_id, JobStatus.DISPATCHED, cloud_task_name=task_name
+            )
+        else:
+            job_tracker.update_status(
+                job_id,
+                JobStatus.FAILED,
+                error_message="Failed to dispatch Cloud Task",
+            )
+            raise HTTPException(status_code=500, detail="Failed to dispatch ingestion task")
+
+        return IngestionJobResponse(
+            job_id=job_id,
+            status=JobStatus.PENDING.value,
+            message=f"Ingestion queued for {request.owner}/{request.repo_name}",
+            poll_url=f"/api/v1/ingest/jobs/{job_id}",
+        )
 
 
 @router.get("/jobs/{job_id}", response_model=JobStatusResponse)
