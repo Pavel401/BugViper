@@ -1,0 +1,39 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "2b15377e30a0",
+  "session_id": "59e617bb-6c8b-48f4-867a-d8a975554627",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-14T11:45:23.113472Z",
+  "branch": "path-fixes-calls-added",
+  "checkpoints_count": 7,
+  "files_touched": [
+    ".gitignore",
+    "CLAUDE.md",
+    "api/services/firebase_service.py",
+    "api/services/review_service.py",
+    "api/utils/comment_formatter.py",
+    "db/queries.py",
+    "deepagent/agent/review_pipeline.py",
+    "deepagent/models/agent_schemas.py",
+    "deepagent/prompts.py",
+    "deepagent/review_pipeline.py"
+  ],
+  "agent": "Claude Code",
+  "transcript_identifier_at_start": "a2d296d7-9ebb-46de-bf6f-96d138a3f240",
+  "token_usage": {
+    "input_tokens": 79,
+    "cache_creation_tokens": 170872,
+    "cache_read_tokens": 5120445,
+    "output_tokens": 12130,
+    "api_call_count": 61
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-14T11:45:23.048149Z",
+    "agent_lines": 3108,
+    "human_added": 34345,
+    "human_modified": 6,
+    "human_removed": 0,
+    "total_committed": 37459,
+    "agent_percentage": 8.297071464801515
+  }
+}

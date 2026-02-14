@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "2b15377e30a0",
+  "strategy": "manual-commit",
+  "branch": "path-fixes-calls-added",
+  "checkpoints_count": 7,
+  "files_touched": [
+    ".gitignore",
+    "CLAUDE.md",
+    "api/services/firebase_service.py",
+    "api/services/review_service.py",
+    "api/utils/comment_formatter.py",
+    "db/queries.py",
+    "deepagent/agent/review_pipeline.py",
+    "deepagent/models/agent_schemas.py",
+    "deepagent/prompts.py",
+    "deepagent/review_pipeline.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/2b/15377e30a0/0/metadata.json",
+      "transcript": "/2b/15377e30a0/0/full.jsonl",
+      "context": "/2b/15377e30a0/0/context.md",
+      "content_hash": "/2b/15377e30a0/0/content_hash.txt",
+      "prompt": "/2b/15377e30a0/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 79,
+    "cache_creation_tokens": 170872,
+    "cache_read_tokens": 5120445,
+    "output_tokens": 12130,
+    "api_call_count": 61
+  }
+}
