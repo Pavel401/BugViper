@@ -604,12 +604,20 @@ class KotlinLangTreeSitterParser:
                 
         return params
 
-def pre_scan_kotlin(files: list[Path], parser_wrapper) -> dict:
+def pre_scan_kotlin(files: list[Path], parser_wrapper, repo_path: Path) -> dict:
+    """Pre-scan Kotlin files to build a name-to-RELATIVE-paths mapping."""
     name_to_files = {}
     for path in files:
         try:
             with open(path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
+            
+            # Store RELATIVE path
+            try:
+                relative_path = str(path.relative_to(repo_path))
+            except ValueError:
+                warning_logger(f"Pre-scan: File {path} not within repo {repo_path}, skipping")
+                continue
             
             # 1. Extract package
             # package com.example.project
@@ -626,14 +634,14 @@ def pre_scan_kotlin(files: list[Path], parser_wrapper) -> dict:
                 # Map simple name
                 if name not in name_to_files:
                     name_to_files[name] = []
-                name_to_files[name].append(str(path))
+                name_to_files[name].append(relative_path)
                 
                 # If package exists, map FQN
                 if package_name:
                     fqn = f"{package_name}.{name}"
                     if fqn not in name_to_files:
                         name_to_files[fqn] = []
-                    name_to_files[fqn].append(str(path))
+                    name_to_files[fqn].append(relative_path)
                     
         except Exception:
             pass

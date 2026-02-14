@@ -443,7 +443,8 @@ class JavaLangTreeSitterParser:
         return params
 
 
-def pre_scan_java(files: list[Path], parser_wrapper) -> dict:
+def pre_scan_java(files: list[Path], parser_wrapper, repo_path: Path) -> dict:
+    """Pre-scan Java files to build a name-to-RELATIVE-paths mapping."""
     name_to_files = {}
     
     for path in files:
@@ -451,19 +452,26 @@ def pre_scan_java(files: list[Path], parser_wrapper) -> dict:
             with open(path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
             
+            # Store RELATIVE path
+            try:
+                relative_path = str(path.relative_to(repo_path))
+            except ValueError:
+                warning_logger(f"Pre-scan: File {path} not within repo {repo_path}, skipping")
+                continue
+            
             class_matches = re.finditer(r'\b(?:public\s+|private\s+|protected\s+)?(?:static\s+)?(?:abstract\s+)?(?:final\s+)?class\s+(\w+)', content)
             for match in class_matches:
                 class_name = match.group(1)
                 if class_name not in name_to_files:
                     name_to_files[class_name] = []
-                name_to_files[class_name].append(str(path))
+                name_to_files[class_name].append(relative_path)
             
             interface_matches = re.finditer(r'\b(?:public\s+|private\s+|protected\s+)?interface\s+(\w+)', content)
             for match in interface_matches:
                 interface_name = match.group(1)
                 if interface_name not in name_to_files:
                     name_to_files[interface_name] = []
-                name_to_files[interface_name].append(str(path))
+                name_to_files[interface_name].append(relative_path)
                 
         except Exception as e:
             error_logger(f"Error pre-scanning Java file {path}: {e}")

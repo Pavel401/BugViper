@@ -500,8 +500,8 @@ class TypescriptLangTreeSitterParser:
                 variables.append(variable_data)
         return variables
 
-def pre_scan_typescript(files: list[Path], parser_wrapper) -> dict:
-    """Scans TypeScript files to create a map of class/function names to their file paths."""
+def pre_scan_typescript(files: list[Path], parser_wrapper, repo_path: Path) -> dict:
+    """Scans TypeScript files to create a map of class/function names to their RELATIVE file paths."""
     imports_map = {}
     
     # Simplified queries that capture the parent nodes, then extract names manually
@@ -565,9 +565,13 @@ def pre_scan_typescript(files: list[Path], parser_wrapper) -> dict:
                         if name:
                             if name not in imports_map:
                                 imports_map[name] = []
-                            file_path_str = str(path.resolve())
-                            if file_path_str not in imports_map[name]:
-                                imports_map[name].append(file_path_str)
+                            # Store RELATIVE path
+                            try:
+                                relative_path = str(path.relative_to(repo_path))
+                                if relative_path not in imports_map[name]:
+                                    imports_map[name].append(relative_path)
+                            except ValueError:
+                                warning_logger(f"Pre-scan: File {path} not within repo {repo_path}, skipping")
                                 
                 except Exception as query_error:
                     warning_logger(f"Query failed for pattern '{query_str}': {query_error}")

@@ -355,6 +355,7 @@ def _find_callers(code_finder, symbol_names: Set[str]) -> List[Dict]:
 # ==========================================================================
 
 def _build_agent_context(
+    diff_text: str,
     import_context: List[Dict],
     caller_context: List[Dict],
     graph_section: str,
@@ -362,112 +363,88 @@ def _build_agent_context(
     """
     Build the markdown context string that gets sent to the LLM review agents.
 
-    Combines:
-      - Resolved import source code from the graph
-      - Impact analysis (who calls the changed code)
-      - Graph context (symbols in changed line ranges)
+    Context is structured in order of importance:
+      0. The actual diff (what's changing) - MOST CRITICAL
+      1. Graph context (symbols in changed line ranges) - DEDUPED
+      2. Impact analysis (who calls the changed code)
+      3. Resolved import source code from the graph
     """
     parts = []
 
-    # Section 1: Source code of imported dependencies
+    # Section 0: THE DIFF (what's actually changing)
+    parts.append("## Code Changes (Diff)")
+    parts.append("*This is what the PR modifies:*")
+    parts.append("")
+    parts.append("```diff")
+    # Limit diff to reasonable size (50K chars max)
+    if len(diff_text) > 50000:
+        parts.append(diff_text[:50000])
+        parts.append("# ... (diff truncated - very large PR)")
+    else:
+        parts.append(diff_text)
+    parts.append("```")
+    parts.append("")
+    parts.append("---")
+    parts.append("")
+
+    # Section 1: Graph context (symbols overlapping changed lines)
+    if graph_section and graph_section != "No graph context available.":
+        parts.append("## Code Being Modified (Full Context)")
+        parts.append(graph_section)
+        parts.append("")
+
+    # Section 2: Impact Analysis (who calls the changed code)
+    if caller_context:
+        parts.append("## Impact Analysis (Downstream Dependencies)")
+        total_callers = sum(len(entry["callers"]) for entry in caller_context)
+        parts.append(f"*{total_callers} callers found across {len(caller_context)} modified symbols*")
+        parts.append("")
+        for entry in caller_context:
+            parts.append(f"### `{entry['symbol']}` is called by:")
+            for c in entry["callers"]:
+                parts.append(f"- `{c['name']}()` in [{c.get('path', '?')}](line {c.get('line', '?')})")
+        parts.append("")
+
+    # Section 3: Source code of imported dependencies
     if import_context:
-        parts.append("## Imported Dependencies (source from graph)")
+        parts.append("## Imported Dependencies (Upstream)")
+        parts.append(f"*{len(import_context)} imports resolved from graph*")
+        parts.append("")
         for imp in import_context:
             source = imp.get("source", "")
             if source:
-                parts.append(f"### `{imp['name']}` from `{imp['module']}` ({imp.get('path', '')})")
+                parts.append(f"### `{imp['name']}` from `{imp['module']}`")
+                parts.append(f"*Path: {imp.get('path', 'n/a')} | Type: {imp.get('type', 'unknown')}*")
+                parts.append("")
+                # Truncate very long sources
+                if len(source) > 3000:
+                    source = source[:3000] + "\n# ... (truncated for brevity)"
                 parts.append(f"```python\n{source}\n```")
-            else:
-                parts.append(f"- `{imp['name']}` from `{imp['module']}` (source not in graph)")
-        parts.append("")
-
-    # Section 2: Callers of changed functions
-    if caller_context:
-        parts.append("## Impact Analysis (who calls the changed code)")
-        for entry in caller_context:
-            caller_names = ", ".join(
-                f"`{c['name']}` in `{c.get('path', '?')}`" for c in entry["callers"]
-            )
-            parts.append(f"- `{entry['symbol']}` is called by: {caller_names}")
-        parts.append("")
-
-    # Section 3: Graph context (symbols overlapping changed lines)
-    if graph_section and graph_section != "No graph context available.":
-        parts.append("## Graph Context")
-        parts.append(graph_section)
+                parts.append("")
         parts.append("")
 
     return "\n".join(parts) if parts else "No additional context available."
 
 
 # ==========================================================================
-# Debug dump (writes context to output/<pr_number>/context_<timestamp>.md)
+# Per-step debug dump helpers
 # ==========================================================================
 
-def _dump_context_to_file(
-    owner: str, repo: str, pr_number: int, diff_text: str,
-    agent_context: str, raw_imports: List[Dict], resolved_imports: List[Dict],
-    caller_context: List[Dict], graph_symbols: list,
-    files_changed: list, changed_symbol_names: list, risk_level: str,
-) -> None:
-    """Save all gathered context to a markdown file for debugging/inspection."""
+def _make_review_dir(owner: str, repo: str, pr_number: int) -> Path:
+    """Create and return a timestamped folder for this review run."""
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    review_dir = Path("output") / f"review-{timestamp}"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Review debug dir: {review_dir}")
+    return review_dir
+
+
+def _write_step(review_dir: Path, filename: str, content: str) -> None:
+    """Write a single step's debug output to <review_dir>/<filename>.md."""
     try:
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        output_dir = Path("output") / str(pr_number)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        context_file = output_dir / f"context_{timestamp}.md"
-
-        total_callers = sum(len(c["callers"]) for c in caller_context)
-
-        lines = [
-            f"# PR Review Context — {owner}/{repo}#{pr_number}",
-            f"**Generated at:** {datetime.now().isoformat()}",
-            f"**Risk level:** {risk_level}",
-            "",
-            # What files were touched
-            "## Files Changed",
-            *[f"- `{f}`" for f in files_changed],
-            "",
-            # Functions/classes defined in the added lines
-            "## Changed Symbols (from diff)",
-            *[f"- `{s}`" for s in changed_symbol_names],
-            "",
-            # All imports found in the added lines (tree-sitter extraction)
-            f"## Extracted Imports from Diff ({len(raw_imports)})",
-            *[f"- `{imp.get('name', '?')}` (full: `{imp.get('full_import_name', imp.get('source', '?'))}`)"
-              for imp in raw_imports],
-            "",
-            # Which of those imports we found in the graph (with source code)
-            f"## Resolved Imports ({len(resolved_imports)}/{len(raw_imports)} resolved from graph)",
-            *[f"- `{imp['name']}` from `{imp['module']}` → `{imp.get('path', 'not found')}`"
-              for imp in resolved_imports],
-            "",
-            # Functions that call the changed symbols
-            f"## Caller Impact ({total_callers} callers)",
-            *[f"- `{c['symbol']}` called by: "
-              + ", ".join(f"`{caller['name']}`" for caller in c["callers"])
-              for c in caller_context],
-            "",
-            # Symbols from the graph that overlap with changed line ranges
-            f"## Graph Symbols ({len(graph_symbols)})",
-            *[f"- `{s.get('name', '')}` ({s.get('type', 'unknown')}) in `{s.get('file_path', '')}`"
-              for s in graph_symbols],
-            "",
-            # The full context string that gets sent to the LLM agents
-            "## Context Sent to Agents",
-            agent_context,
-            "",
-            # Raw diff for reference
-            "## Diff",
-            "```diff",
-            diff_text,
-            "```",
-        ]
-
-        context_file.write_text("\n".join(lines), encoding="utf-8")
-        logger.info(f"Review context saved to {context_file}")
+        (review_dir / filename).write_text(content, encoding="utf-8")
     except Exception as e:
-        logger.warning(f"Failed to dump review context: {e}")
+        logger.warning(f"Failed to write {filename}: {e}")
 
 
 # ==========================================================================
@@ -488,13 +465,14 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int) -> None:
          c. Find callers of changed functions (impact analysis)
       5. Build risk level based on scope of changes
       6. Format everything into context for the LLM agents
-      7. Dump context to file for debugging
-      8. Run multi-agent review (bug-hunter + security-auditor)
-      9. Format and post the review comment on the PR
+      7. [DEBUG MODE] LLM call skipped — all context written to review dir
     """
     try:
         logger.info(f"Starting review pipeline for {owner}/{repo}#{pr_number}")
         repo_id = f"{owner}/{repo}"  # matches the repo identifier stored in the graph
+
+        # Create a timestamped folder for this review run
+        review_dir = _make_review_dir(owner, repo, pr_number)
 
         # ── Step 1: Fetch diff from GitHub ──────────────────────────────
         gh = GitHubClient()
@@ -504,33 +482,60 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int) -> None:
             return
         logger.info(f"Fetched diff ({len(diff_text)} chars)")
 
+        _write_step(review_dir, "01_diff.md", "\n".join([
+            f"# Step 1 — Raw Diff",
+            f"**PR:** {owner}/{repo}#{pr_number}",
+            f"**Chars:** {len(diff_text)}",
+            "",
+            "```diff",
+            diff_text,
+            "```",
+        ]))
+
         # ── Step 2: Parse diff structure ────────────────────────────────
-        # Returns list of {"file_path", "start_line", "end_line"} hunks
         changes = parse_unified_diff(diff_text)
         files_changed = list({c["file_path"] for c in changes})
         logger.info(f"Parsed {len(changes)} hunks across {len(files_changed)} files")
 
+        _write_step(review_dir, "02_parsed_diff.md", "\n".join([
+            f"# Step 2 — Parsed Diff",
+            f"**Hunks:** {len(changes)}  |  **Files changed:** {len(files_changed)}",
+            "",
+            "## Files Changed",
+            *[f"- `{f}`" for f in files_changed],
+            "",
+            "## Hunks",
+            *[
+                f"- `{c['file_path']}` lines {c.get('start_line', '?')}–{c.get('end_line', '?')}"
+                for c in changes
+            ],
+        ]))
+
         # ── Step 3: Extract imports & symbols from added lines ──────────
-        # Uses the same tree-sitter language parsers as the ingestion service
         diff_imports = extract_imports_from_diff(diff_text)
-
-        print('-----------------------------------------------------')
-        print(diff_imports)
-        print('-----------------------------------------------------')
-
         diff_functions, diff_classes = extract_symbols_from_diff(diff_text)
-
-        print('-----------------------------------------------------')
-        print(diff_functions)
-        print(diff_classes)
-        print('-----------------------------------------------------')
-
-    
         all_diff_symbols = diff_functions | diff_classes
         logger.info(
             f"Diff extraction: {len(diff_imports)} imports, "
             f"{len(diff_functions)} functions, {len(diff_classes)} classes"
         )
+
+        _write_step(review_dir, "03_extracted_symbols.md", "\n".join([
+            f"# Step 3 — Extracted Imports & Symbols",
+            "",
+            f"## Imports ({len(diff_imports)})",
+            *[
+                f"- `{imp.get('name', '?')}` "
+                f"(full: `{imp.get('full_import_name', imp.get('source', '?'))}`)"
+                for imp in diff_imports
+            ],
+            "",
+            f"## Functions ({len(diff_functions)})",
+            *[f"- `{fn}`" for fn in sorted(diff_functions)],
+            "",
+            f"## Classes ({len(diff_classes)})",
+            *[f"- `{cls}`" for cls in sorted(diff_classes)],
+        ]))
 
         # ── Step 4: Connect to Neo4j and resolve context ────────────────
         neo4j = Neo4jClient(
@@ -548,16 +553,65 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int) -> None:
         graph_symbols = graph_context.get("affected_symbols", [])
         graph_section = build_graph_context_section(graph_context)
 
+        _write_step(review_dir, "04a_graph_symbols.md", "\n".join([
+            f"# Step 4a — Graph Symbols (overlapping changed lines)",
+            "",
+            f"## Affected Symbols ({len(graph_symbols)})",
+            *[
+                f"- `{s.get('name', '')}` ({s.get('type', 'unknown')}) "
+                f"in `{s.get('file_path', '')}`"
+                for s in graph_symbols
+            ],
+            "",
+            "## Graph Context Section (for agents)",
+            graph_section,
+        ]))
+
         # 4b. Look up each imported name in the graph (scoped to this repo)
         resolved_imports = _resolve_imports_from_graph(neo4j, diff_imports, repo_id)
         logger.info(f"Resolved {len(resolved_imports)}/{len(diff_imports)} imports from graph")
 
+        _write_step(review_dir, "04b_resolved_imports.md", "\n".join([
+            f"# Step 4b — Resolved Imports from Graph",
+            f"**Resolved:** {len(resolved_imports)} / {len(diff_imports)}",
+            "",
+            *[
+                "\n".join([
+                    f"## `{imp['name']}` from `{imp['module']}`",
+                    f"- **Path:** `{imp.get('path', 'n/a')}`",
+                    f"- **Type:** {imp.get('type', 'n/a')}",
+                    f"- **Line:** {imp.get('line', 'n/a')}",
+                    f"- **Docstring:** {imp.get('docstring', '') or '_none_'}",
+                    "",
+                    "```python",
+                    imp.get("source", "") or "# source not available",
+                    "```",
+                ])
+                for imp in resolved_imports
+            ],
+        ]))
+
         # 4c. Find callers of changed functions (impact analysis)
-        # Merge symbols from diff extraction + graph overlap
         all_symbol_names = all_diff_symbols | {s.get("name", "") for s in graph_symbols}
         caller_context = _find_callers(code_finder, all_symbol_names)
         total_callers = sum(len(c["callers"]) for c in caller_context)
         logger.info(f"Found {total_callers} callers across {len(caller_context)} symbols")
+
+        _write_step(review_dir, "04c_caller_context.md", "\n".join([
+            f"# Step 4c — Caller Impact Analysis",
+            f"**Total callers:** {total_callers}  |  **Symbols with callers:** {len(caller_context)}",
+            "",
+            *[
+                "\n".join([
+                    f"## `{entry['symbol']}`",
+                    *[
+                        f"- `{c['name']}` in `{c.get('path', '?')}` (line {c.get('line', '?')})"
+                        for c in entry["callers"]
+                    ],
+                ])
+                for entry in caller_context
+            ],
+        ]))
 
         # ── Step 5: Determine risk level ────────────────────────────────
         changed_symbol_names = list(all_symbol_names)
@@ -568,18 +622,35 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int) -> None:
         else:
             risk_level = "low"
 
+        _write_step(review_dir, "05_risk_level.md", "\n".join([
+            f"# Step 5 — Risk Level",
+            "",
+            f"**Risk level:** `{risk_level}`",
+            f"**Total callers:** {total_callers}",
+            f"**Total symbols:** {len(all_symbol_names)}",
+            "",
+            "## All Changed Symbols",
+            *[f"- `{s}`" for s in sorted(changed_symbol_names)],
+        ]))
+
         # ── Step 6: Build context for LLM agents ───────────────────────
         agent_context = _build_agent_context(
-            resolved_imports, caller_context, graph_section
+            diff_text, resolved_imports, caller_context, graph_section
         )
 
-        # ── Step 7: Dump context to file for debugging ──────────────────
-        _dump_context_to_file(
-            owner, repo, pr_number, diff_text,
-            agent_context, diff_imports, resolved_imports, caller_context,
-            graph_symbols, files_changed, changed_symbol_names, risk_level,
+        _write_step(review_dir, "06_agent_context.md", "\n".join([
+            f"# Step 6 — Agent Context (what would be sent to the LLM)",
+            "",
+            agent_context,
+        ]))
+
+        # ── Step 7: LLM call skipped (debug mode) ──────────────────────
+        logger.info(
+            f"[DEBUG MODE] LLM call skipped. "
+            f"All context written to {review_dir}"
         )
 
+      
         # ── Step 8: Run multi-agent review ──────────────────────────────
         review_results = await run_review(diff_text, agent_context, repo_id, pr_number)
         logger.info(f"Review complete: {len(review_results.issues)} issues found")
@@ -593,7 +664,12 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int) -> None:
         )
         final_comment = format_github_comment(review_results, context_data, pr_number)
         await gh.post_comment(owner, repo, pr_number, final_comment)
+
+        # Raw agent response for debugging
+        raw_comment = f"<details>\n<summary>Raw Agent Response</summary>\n\n```json\n{review_results.model_dump_json(indent=2)}\n```\n</details>"
+        await gh.post_comment(owner, repo, pr_number, raw_comment)
         logger.info(f"Posted review comment on {owner}/{repo}#{pr_number}")
+
 
     except Exception:
         logger.error(f"Review pipeline failed: {traceback.format_exc()}")

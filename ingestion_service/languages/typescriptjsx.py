@@ -2,9 +2,9 @@ from pathlib import Path
 
 from common.debug_log import warning_logger
 
-def pre_scan_typescript(files: list[Path], parser_wrapper) -> dict:
+def pre_scan_typescript(files: list[Path], parser_wrapper, repo_path: Path) -> dict:
     """
-    Scans TypeScript JSX (.tsx) files to create a map of class/function names to their file paths.
+    Scans TypeScript JSX (.tsx) files to create a map of class/function names to their RELATIVE file paths.
     Reuses the logic from TypeScript parser, but can be extended for JSX-specific extraction.
     """
     imports_map = {}
@@ -55,9 +55,13 @@ def pre_scan_typescript(files: list[Path], parser_wrapper) -> dict:
                         if name:
                             if name not in imports_map:
                                 imports_map[name] = []
-                            file_path_str = str(path.resolve())
-                            if file_path_str not in imports_map[name]:
-                                imports_map[name].append(file_path_str)
+                            # Store RELATIVE path
+                            try:
+                                relative_path = str(path.relative_to(repo_path))
+                                if relative_path not in imports_map[name]:
+                                    imports_map[name].append(relative_path)
+                            except ValueError:
+                                warning_logger(f"Pre-scan: File {path} not within repo {repo_path}, skipping")
                 except Exception as query_error:
                     warning_logger(f"Query failed for pattern '{query_str}': {query_error}")
         except Exception as e:
