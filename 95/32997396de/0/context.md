@@ -1,0 +1,12 @@
+# Session Context
+
+## User Prompts
+
+### Prompt 1
+
+Hi
+
+### Prompt 2
+
+for each step store the results in a .md file , every time create a new folder called review-current time / inside this for each step in the execute_pr_review store the results in .md for now don't call the LLm , I only want to debug the context
+
