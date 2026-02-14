@@ -1,0 +1,46 @@
+Hi Claude We are building an ai based PR reviewer . So first we ingest the Repo into the Graph Db and when a New PR comes we basically fetch the line changes and code chages from the DB and pass the Diff and rest of the context to the LLm to process and get the Review done . But right now there is a issue , so the call relationship is not implemented for some reason. If you look at the result from curl -X POST http://localhost:8000/api/v1/ingest/repository \
+  -H "Content-Type: application/json" \
+  -d '{
+    "owner": "Pavel401",
+    "repo_name": "BugViper",
+    "clear_existing": true
+  }' the call relationship is zero . So what am I missing here ?
+
+---
+
+look at the api.log it has so many issues
+
+---
+
+How to complete Code Ingestion works let's say for the Python what steps does it go through ?
+
+---
+
+Please update your claude.md with all of the context you gathered so far
+
+---
+
+bro I just ingested can you check the stats now
+
+---
+
+<task-notification>
+<task-id>b72fd63</task-id>
+<output-file>REDACTED.output</output-file>
+<status>completed</status>
+<summary>Background command "Fetch graph stats from the API" completed (exit code 0)</summary>
+</task-notification>
+Read the output file to retrieve the result: REDACTED.output
+
+---
+
+await gh.post_comment(owner, repo, pr_number, review_results.summary + review_results.positive_findings + "\n\n" + review_results.issues + review_results.error)
+ post the raw agent response directly
+
+---
+
+[Request interrupted by user for tool use]
+
+---
+
+Post two commient one the formtted one and another the RAW Agent one
