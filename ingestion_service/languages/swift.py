@@ -465,13 +465,20 @@ class SwiftLangTreeSitterParser:
                 return self._get_node_text(child)
         return None
 
-def pre_scan_swift(files: list[Path], parser_wrapper) -> dict:
-    """Pre-scan Swift files to build a map of class/struct/enum/protocol names to file paths."""
+def pre_scan_swift(files: list[Path], parser_wrapper, repo_path: Path) -> dict:
+    """Pre-scan Swift files to build a map of class/struct/enum/protocol names to RELATIVE file paths."""
     name_to_files = {}
     for path in files:
         try:
             with open(path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
+            
+            # Store RELATIVE path
+            try:
+                relative_path = str(path.relative_to(repo_path))
+            except ValueError:
+                warning_logger(f"Pre-scan: File {path} not within repo {repo_path}, skipping")
+                continue
             
             # Extract classes, structs, enums, protocols
             matches = re.finditer(r'\b(class|struct|enum|protocol)\s+(\w+)', content)
@@ -480,7 +487,7 @@ def pre_scan_swift(files: list[Path], parser_wrapper) -> dict:
                 name = match.group(2)
                 if name not in name_to_files:
                     name_to_files[name] = []
-                name_to_files[name].append(str(path))
+                name_to_files[name].append(relative_path)
                     
         except Exception:
             pass

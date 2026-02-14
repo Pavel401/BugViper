@@ -521,10 +521,10 @@ class CppLangTreeSitterParser:
         return "::".join(name_parts) if name_parts else None
 
 
-def pre_scan_cpp(files: list[Path], parser_wrapper) -> dict:
+def pre_scan_cpp(files: list[Path], parser_wrapper, repo_path: Path) -> dict:
     """
     Quickly scans C++ files to build a map of top-level class, struct, and function names
-    to their file paths.
+    to their RELATIVE file paths.
     """
     imports_map = {}
 
@@ -544,7 +544,12 @@ def pre_scan_cpp(files: list[Path], parser_wrapper) -> dict:
             for node, capture_name in execute_query(parser_wrapper.language, query_str, tree.root_node):
                 if capture_name == "name":
                     name = node.text.decode("utf-8")
-                    imports_map.setdefault(name, []).append(str(path.resolve()))
+                    # Store RELATIVE path
+                    try:
+                        relative_path = str(path.relative_to(repo_path))
+                        imports_map.setdefault(name, []).append(relative_path)
+                    except ValueError:
+                        warning_logger(f"Pre-scan: File {path} not within repo {repo_path}, skipping")
         except Exception as e:
             warning_logger(f"Tree-sitter pre-scan failed for {path}: {e}")
 

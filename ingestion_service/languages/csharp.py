@@ -492,14 +492,21 @@ class CSharpLangTreeSitterParser:
 
 
 
-def pre_scan_csharp(files: list[Path], parser_wrapper) -> dict:
-    """Pre-scan C# files to build a name-to-files mapping."""
+def pre_scan_csharp(files: list[Path], parser_wrapper, repo_path: Path) -> dict:
+    """Pre-scan C# files to build a name-to-RELATIVE-paths mapping."""
     name_to_files = {}
     
     for path in files:
         try:
             with open(path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
+            
+            # Store RELATIVE path
+            try:
+                relative_path = str(path.relative_to(repo_path))
+            except ValueError:
+                warning_logger(f"Pre-scan: File {path} not within repo {repo_path}, skipping")
+                continue
             
             # Match class declarations
             class_matches = re.finditer(
@@ -510,7 +517,7 @@ def pre_scan_csharp(files: list[Path], parser_wrapper) -> dict:
                 class_name = match.group(1)
                 if class_name not in name_to_files:
                     name_to_files[class_name] = []
-                name_to_files[class_name].append(str(path))
+                name_to_files[class_name].append(relative_path)
             
             # Match interface declarations
             interface_matches = re.finditer(
@@ -521,7 +528,7 @@ def pre_scan_csharp(files: list[Path], parser_wrapper) -> dict:
                 interface_name = match.group(1)
                 if interface_name not in name_to_files:
                     name_to_files[interface_name] = []
-                name_to_files[interface_name].append(str(path))
+                name_to_files[interface_name].append(relative_path)
             
             # Match struct declarations
             struct_matches = re.finditer(
@@ -532,7 +539,7 @@ def pre_scan_csharp(files: list[Path], parser_wrapper) -> dict:
                 struct_name = match.group(1)
                 if struct_name not in name_to_files:
                     name_to_files[struct_name] = []
-                name_to_files[struct_name].append(str(path))
+                name_to_files[struct_name].append(relative_path)
             
             # Match record declarations
             record_matches = re.finditer(
@@ -543,7 +550,7 @@ def pre_scan_csharp(files: list[Path], parser_wrapper) -> dict:
                 record_name = match.group(1)
                 if record_name not in name_to_files:
                     name_to_files[record_name] = []
-                name_to_files[record_name].append(str(path))
+                name_to_files[record_name].append(relative_path)
                 
         except Exception as e:
             error_logger(f"Error pre-scanning C# file {path}: {e}")

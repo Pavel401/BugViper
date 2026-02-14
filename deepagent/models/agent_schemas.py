@@ -1,7 +1,8 @@
 """Pydantic models for the code review workflow."""
 
+import hashlib
 from typing import Any, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class Issue(BaseModel):
@@ -18,6 +19,27 @@ class Issue(BaseModel):
     description: str = Field(description="Detailed description of the issue")
     suggestion: str | None = Field(default=None, description="Suggested fix (optional)")
     impact: str | None = Field(default=None, description="Impact assessment (optional)")
+    # Populated post-reconciliation (not by the LLM)
+    status: Literal["new", "still_open", "fixed"] = Field(default="new")
+    fingerprint: str = Field(default="")
+
+    @model_validator(mode="after")
+    def compute_fingerprint(self) -> "Issue":
+        if not self.fingerprint:
+            raw = f"{self.file}::{self.title.strip().lower()}"
+            self.fingerprint = hashlib.sha1(raw.encode()).hexdigest()[:12]
+        return self
+
+
+class ReconciledReview(BaseModel):
+    """Review results after cross-run reconciliation."""
+
+    issues: list[Issue] = Field(default_factory=list)
+    positive_findings: list[str] = Field(default_factory=list)
+    summary: str = ""
+    fixed_fingerprints: list[str] = Field(default_factory=list)
+    still_open_fingerprints: list[str] = Field(default_factory=list)
+    new_fingerprints: list[str] = Field(default_factory=list)
 
 
 class AgentFindings(BaseModel):
