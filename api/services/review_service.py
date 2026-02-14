@@ -20,9 +20,10 @@ from typing import Dict, List, Set, Tuple
 
 from api.utils.comment_formatter import format_github_comment
 from api.utils.graph_context import build_graph_context_section
+from api.services.firebase_service import firebase_service
 from db.client import Neo4jClient
 from db.queries import CodeQueryService
-from deepagent.models.agent_schemas import ContextData
+from deepagent.models.agent_schemas import ContextData, Issue, ReconciledReview
 from deepagent.agent.review_pipeline import run_review
 from common.github_client import GitHubClient
 from common.diff_parser import parse_unified_diff
@@ -427,6 +428,90 @@ def _build_agent_context(
 
 
 # ==========================================================================
+# ==========================================================================
+# Reconciliation helpers
+# ==========================================================================
+
+def _reconcile(
+    new_issues: list[Issue],
+    prev_run: dict | None,
+) -> ReconciledReview:
+    """
+    Diff new agent output against the previous run.
+
+    Each issue gets a status:
+      - "fixed"      — fingerprint was in prev run but not in new run
+      - "still_open" — fingerprint in both runs
+      - "new"        — fingerprint only in new run
+
+    Fixed issues from the previous run are re-injected (with status="fixed")
+    so the comment can render them in the ✅ Fixed section.
+    """
+    prev_issues: list[dict] = prev_run.get("issues", []) if prev_run else []
+    prev_fp: set[str] = {i["fingerprint"] for i in prev_issues if i.get("fingerprint")}
+    new_fp: set[str] = {i.fingerprint for i in new_issues}
+
+    fixed_fp = prev_fp - new_fp
+    still_open_fp = prev_fp & new_fp
+    new_fp_only = new_fp - prev_fp
+
+    tagged: list[Issue] = []
+    for issue in new_issues:
+        if issue.fingerprint in still_open_fp:
+            issue.status = "still_open"
+        else:
+            issue.status = "new"
+        tagged.append(issue)
+
+    # Re-add fixed issues from prev run so the comment can show them
+    for prev_issue_dict in prev_issues:
+        fp = prev_issue_dict.get("fingerprint", "")
+        if fp in fixed_fp:
+            fixed_issue = Issue.model_validate({**prev_issue_dict, "status": "fixed"})
+            tagged.append(fixed_issue)
+
+    total = len(tagged)
+    n_fixed = len(fixed_fp)
+    n_open = len(still_open_fp)
+    n_new = len(new_fp_only)
+    run_label = f"Run #{(prev_run or {}).get('runNumber', 0) + 1}"
+
+    if total == 0 or (n_fixed == total):
+        summary = f"{run_label} — All issues resolved. No new issues found. ✅"
+    else:
+        summary = (
+            f"{run_label} — {n_fixed} fixed, {n_open} still open, {n_new} new"
+        )
+
+    return ReconciledReview(
+        issues=tagged,
+        summary=summary,
+        fixed_fingerprints=list(fixed_fp),
+        still_open_fingerprints=list(still_open_fp),
+        new_fingerprints=list(new_fp_only),
+    )
+
+
+def _build_previous_issues_section(prev_run: dict) -> str:
+    """Format the previous run's open issues as a prompt context section."""
+    open_issues = [i for i in prev_run.get("issues", []) if i.get("status") != "fixed"]
+    if not open_issues:
+        return ""
+    lines = [
+        "## Previously Flagged Issues (still open from last review)",
+        "*These were reported in the last review run and NOT yet fixed. "
+        "Do not re-report them unless the code has changed further.*",
+        "",
+    ]
+    for issue in open_issues:
+        lines.append(
+            f"- [{issue.get('severity','?').upper()}] **{issue.get('title','')}** "
+            f"in `{issue.get('file','')}` — {issue.get('description','')}"
+        )
+    return "\n".join(lines)
+
+
+# ==========================================================================
 # Per-step debug dump helpers
 # ==========================================================================
 
@@ -644,30 +729,59 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int) -> None:
             agent_context,
         ]))
 
-        # ── Step 7: LLM call skipped (debug mode) ──────────────────────
-        logger.info(
-            f"[DEBUG MODE] LLM call skipped. "
-            f"All context written to {review_dir}"
-        )
+        # ── Step 7: Load previous review run from Firestore ─────────────
+        uid = firebase_service.lookup_uid_by_github_username(owner)
+        prev_run: dict | None = None
+        if uid:
+            firebase_service.upsert_pr_metadata(uid, owner, repo, pr_number, {
+                "owner": owner,
+                "repo": repo,
+                "prNumber": pr_number,
+                "repoId": repo_id,
+            })
+            prev_run = firebase_service.get_latest_review_run(uid, owner, repo, pr_number)
+            if prev_run:
+                logger.info(f"Loaded previous run #{prev_run.get('runNumber')} for {repo_id}#{pr_number}")
+        else:
+            logger.warning(f"No Firestore user found for GitHub owner '{owner}' — skipping history")
 
-      
+        # Inject previous open issues into agent context
+        if prev_run:
+            prev_section = _build_previous_issues_section(prev_run)
+            if prev_section:
+                agent_context = agent_context + "\n\n" + prev_section
+
         # ── Step 8: Run multi-agent review ──────────────────────────────
         review_results = await run_review(diff_text, agent_context, repo_id, pr_number)
         logger.info(f"Review complete: {len(review_results.issues)} issues found")
 
-        # ── Step 9: Format and post comment ─────────────────────────────
+        # ── Step 9: Reconcile new results against previous run ───────────
+        reconciled = _reconcile(review_results.issues, prev_run)
+        reconciled.positive_findings = review_results.positive_findings
+
+        # ── Step 10: Save run to Firestore ───────────────────────────────
+        if uid:
+            run_doc = {
+                "issues": [i.model_dump() for i in reconciled.issues],
+                "positive_findings": reconciled.positive_findings,
+                "summary": reconciled.summary,
+                "fixed_fingerprints": reconciled.fixed_fingerprints,
+                "still_open_fingerprints": reconciled.still_open_fingerprints,
+                "new_fingerprints": reconciled.new_fingerprints,
+                "repoId": repo_id,
+                "prNumber": pr_number,
+            }
+            firebase_service.save_review_run(uid, owner, repo, pr_number, run_doc)
+
+        # ── Step 11: Format and post comment ─────────────────────────────
         context_data = ContextData(
             files_changed=files_changed,
             modified_symbols=changed_symbol_names,
             total_callers=total_callers,
             risk_level=risk_level,
         )
-        final_comment = format_github_comment(review_results, context_data, pr_number)
+        final_comment = format_github_comment(reconciled, context_data, pr_number)
         await gh.post_comment(owner, repo, pr_number, final_comment)
-
-        # Raw agent response for debugging
-        raw_comment = f"<details>\n<summary>Raw Agent Response</summary>\n\n```json\n{review_results.model_dump_json(indent=2)}\n```\n</details>"
-        await gh.post_comment(owner, repo, pr_number, raw_comment)
         logger.info(f"Posted review comment on {owner}/{repo}#{pr_number}")
 
 

@@ -161,5 +161,120 @@ class BugViperFirebaseService:
         return doc.to_dict().get("githubAccessToken")
 
 
+    # ── User lookup by GitHub username ────────────────────────────────────
+
+    def lookup_uid_by_github_username(self, github_username: str) -> Optional[str]:
+        """Return the Firebase UID for a given GitHub username, or None if not found."""
+        docs = (
+            self._db.collection("users")
+            .where("githubUsername", "==", github_username)
+            .limit(1)
+            .stream()
+        )
+        for doc in docs:
+            return doc.id
+        return None
+
+    # ── PR metadata ────────────────────────────────────────────────────────
+
+    def upsert_pr_metadata(self, uid: str, owner: str, repo: str, pr_number: int, pr_data: dict) -> None:
+        """
+        Create or update the PR metadata document.
+
+        Path: users/{uid}/repos/{owner}_{repo}/prs/{pr_number}
+        """
+        repo_key = f"{owner}_{repo}"
+        now = datetime.now(timezone.utc).isoformat()
+        doc_ref = (
+            self._db.collection("users")
+            .document(uid)
+            .collection("repos")
+            .document(repo_key)
+            .collection("prs")
+            .document(str(pr_number))
+        )
+        doc = doc_ref.get()
+        payload = {**pr_data, "updatedAt": now}
+        if doc.exists:
+            doc_ref.update(payload)
+        else:
+            payload["createdAt"] = now
+            payload["reviewCount"] = 0
+            payload["openIssueCount"] = 0
+            doc_ref.set(payload)
+
+    # ── Review runs ────────────────────────────────────────────────────────
+
+    def save_review_run(
+        self,
+        uid: str,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        run_data: dict,
+    ) -> str:
+        """
+        Save a review run document and update the PR's tallies.
+
+        Path: users/{uid}/repos/{owner}_{repo}/prs/{pr_number}/reviews/run_{n}
+
+        Returns the run document ID (e.g. "run_2").
+        """
+        repo_key = f"{owner}_{repo}"
+        now = datetime.now(timezone.utc).isoformat()
+
+        pr_ref = (
+            self._db.collection("users")
+            .document(uid)
+            .collection("repos")
+            .document(repo_key)
+            .collection("prs")
+            .document(str(pr_number))
+        )
+
+        # Determine next run number
+        existing = list(pr_ref.collection("reviews").stream())
+        run_number = len(existing) + 1
+        run_id = f"run_{run_number}"
+
+        run_ref = pr_ref.collection("reviews").document(run_id)
+        run_ref.set({**run_data, "runNumber": run_number, "createdAt": now})
+
+        # Update PR-level tallies
+        open_count = len([i for i in run_data.get("issues", []) if i.get("status") != "fixed"])
+        pr_doc = pr_ref.get()
+        if pr_doc.exists:
+            pr_ref.update({
+                "reviewCount": run_number,
+                "openIssueCount": open_count,
+                "lastReviewedAt": now,
+            })
+
+        logger.info(f"Saved review run {run_id} for {owner}/{repo}#{pr_number}")
+        return run_id
+
+    def get_latest_review_run(
+        self, uid: str, owner: str, repo: str, pr_number: int
+    ) -> Optional[dict]:
+        """
+        Fetch the most recent review run document.
+        Returns None if no previous run exists.
+        """
+        repo_key = f"{owner}_{repo}"
+        runs_ref = (
+            self._db.collection("users")
+            .document(uid)
+            .collection("repos")
+            .document(repo_key)
+            .collection("prs")
+            .document(str(pr_number))
+            .collection("reviews")
+        )
+        docs = list(runs_ref.order_by("runNumber", direction="DESCENDING").limit(1).stream())
+        if not docs:
+            return None
+        return docs[0].to_dict()
+
+
 # Module-level convenience instance (triggers Firebase init on import)
 firebase_service = BugViperFirebaseService()
