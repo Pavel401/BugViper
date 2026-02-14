@@ -507,36 +507,46 @@ def _parse_calls(self, captures: list, source_code: str, path: Path, variables: 
                 continue
     return calls
 
-def pre_scan_haskell(file: list[Path], parser_wrapper) -> dict:
+def pre_scan_haskell(files: list[Path], parser_wrapper, repo_path: Path) -> dict:
+    """Pre-scan Haskell files to build a name-to-RELATIVE-paths mapping."""
     name_to_files = {}
     for path in files:
         try:
             with open(path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
-            # 1. Extract package
-            # package com.example.project
-            package_name = ""
-            pkg_match = re.search(r'^\s*package\s+([\w\.]+)', content, re.MULTILINE)
-            if pkg_match:
-                package_name = pkg_match.group(1)
-            # 2. Extract classes/objects/interfaces/typealiases
+            
+            # Store RELATIVE path
+            try:
+                relative_path = str(path.relative_to(repo_path))
+            except ValueError:
+                warning_logger(f"Pre-scan: File {path} not within repo {repo_path}, skipping")
+                continue
+            
+            # 1. Extract module name
+            module_name = ""
+            mod_match = re.search(r'^\s*module\s+([\w\.]+)', content, re.MULTILINE)
+            if mod_match:
+                module_name = mod_match.group(1)
+            
+            # 2. Extract data/newtype/class declarations
             matches = re.finditer(
-                r'^\s*(class|object|interface|typealias)\s+(\w+)',
+                r'^\s*(data|newtype|class|type)\s+(\w+)',
                 content,
+                re.MULTILINE
             )
             for match in matches:
                 name = match.group(2)
                 # Map simple name
                 if name not in name_to_files:
                     name_to_files[name] = []
-                name_to_files[name].append(str(path))
+                name_to_files[name].append(relative_path)
 
-                # If package exists, map FQN
-                if package_name:
-                    fqn = f"{package_name}.{name}"
+                # If module exists, map FQN
+                if module_name:
+                    fqn = f"{module_name}.{name}"
                     if fqn not in name_to_files:
                         name_to_files[fqn] = []
-                    name_to_files[fqn].append(str(path))
+                    name_to_files[fqn].append(relative_path)
         except Exception as e:
             pass
     return name_to_files

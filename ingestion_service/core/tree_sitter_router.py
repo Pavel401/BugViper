@@ -179,8 +179,16 @@ class GraphBuilder:
                 warning_logger(f"Schema creation warning: {e}")
 
 
-    def _pre_scan_for_imports(self, files: list[Path]) -> dict:
-        """Dispatches pre-scan to the correct language-specific implementation."""
+    def _pre_scan_for_imports(self, files: list[Path], repo_path: Path) -> dict:
+        """Dispatches pre-scan to the correct language-specific implementation.
+        
+        Args:
+            files: List of file paths to scan
+            repo_path: Repository root path for calculating relative paths
+            
+        Returns:
+            Dictionary mapping symbol names to relative file paths
+        """
         imports_map = {}
         
         # Group files by language/extension
@@ -194,67 +202,73 @@ class GraphBuilder:
 
         if '.py' in files_by_lang:
             from ..languages import python as python_lang_module
-            imports_map.update(python_lang_module.pre_scan_python(files_by_lang['.py'], self.parsers['.py']))
+            imports_map.update(python_lang_module.pre_scan_python(files_by_lang['.py'], self.parsers['.py'], repo_path))
         if '.ipynb' in files_by_lang:
             from ..languages import python as python_lang_module
-            imports_map.update(python_lang_module.pre_scan_python(files_by_lang['.ipynb'], self.parsers['.ipynb']))
+            imports_map.update(python_lang_module.pre_scan_python(files_by_lang['.ipynb'], self.parsers['.ipynb'], repo_path))
         if '.js' in files_by_lang:
             from ..languages import javascript as js_lang_module
-            imports_map.update(js_lang_module.pre_scan_javascript(files_by_lang['.js'], self.parsers['.js']))
+            imports_map.update(js_lang_module.pre_scan_javascript(files_by_lang['.js'], self.parsers['.js'], repo_path))
         if '.jsx' in files_by_lang:
             from ..languages import javascript as js_lang_module
-            imports_map.update(js_lang_module.pre_scan_javascript(files_by_lang['.jsx'], self.parsers['.jsx']))
+            imports_map.update(js_lang_module.pre_scan_javascript(files_by_lang['.jsx'], self.parsers['.jsx'], repo_path))
         if '.mjs' in files_by_lang:
             from ..languages import javascript as js_lang_module
-            imports_map.update(js_lang_module.pre_scan_javascript(files_by_lang['.mjs'], self.parsers['.mjs']))
+            imports_map.update(js_lang_module.pre_scan_javascript(files_by_lang['.mjs'], self.parsers['.mjs'], repo_path))
         if '.cjs' in files_by_lang:
             from ..languages import javascript as js_lang_module
-            imports_map.update(js_lang_module.pre_scan_javascript(files_by_lang['.cjs'], self.parsers['.cjs']))
+            imports_map.update(js_lang_module.pre_scan_javascript(files_by_lang['.cjs'], self.parsers['.cjs'], repo_path))
         if '.go' in files_by_lang:
              from ..languages import go as go_lang_module
-             imports_map.update(go_lang_module.pre_scan_go(files_by_lang['.go'], self.parsers['.go']))
+             imports_map.update(go_lang_module.pre_scan_go(files_by_lang['.go'], self.parsers['.go'], repo_path))
         if '.ts' in files_by_lang:
             from ..languages import typescript as ts_lang_module
-            imports_map.update(ts_lang_module.pre_scan_typescript(files_by_lang['.ts'], self.parsers['.ts']))
+            imports_map.update(ts_lang_module.pre_scan_typescript(files_by_lang['.ts'], self.parsers['.ts'], repo_path))
         if '.tsx' in files_by_lang:
             from ..languages import typescriptjsx as tsx_lang_module
-            imports_map.update(tsx_lang_module.pre_scan_typescript(files_by_lang['.tsx'], self.parsers['.tsx']))
+            imports_map.update(tsx_lang_module.pre_scan_typescript(files_by_lang['.tsx'], self.parsers['.tsx'], repo_path))
         if '.cpp' in files_by_lang:
             from ..languages import cpp as cpp_lang_module
-            imports_map.update(cpp_lang_module.pre_scan_cpp(files_by_lang['.cpp'], self.parsers['.cpp']))
+            imports_map.update(cpp_lang_module.pre_scan_cpp(files_by_lang['.cpp'], self.parsers['.cpp'], repo_path))
         if '.h' in files_by_lang:
             from ..languages import cpp as cpp_lang_module
-            imports_map.update(cpp_lang_module.pre_scan_cpp(files_by_lang['.h'], self.parsers['.h']))
+            imports_map.update(cpp_lang_module.pre_scan_cpp(files_by_lang['.h'], self.parsers['.h'], repo_path))
         if '.hpp' in files_by_lang:
             from ..languages import cpp as cpp_lang_module
-            imports_map.update(cpp_lang_module.pre_scan_cpp(files_by_lang['.hpp'], self.parsers['.hpp']))
+            imports_map.update(cpp_lang_module.pre_scan_cpp(files_by_lang['.hpp'], self.parsers['.hpp'], repo_path))
         if '.rs' in files_by_lang:
             from ..languages import rust as rust_lang_module
-            imports_map.update(rust_lang_module.pre_scan_rust(files_by_lang['.rs'], self.parsers['.rs']))
+            imports_map.update(rust_lang_module.pre_scan_rust(files_by_lang['.rs'], self.parsers['.rs'], repo_path))
         if '.c' in files_by_lang:
             from ..languages import c as c_lang_module
-            imports_map.update(c_lang_module.pre_scan_c(files_by_lang['.c'], self.parsers['.c']))
+            imports_map.update(c_lang_module.pre_scan_c(files_by_lang['.c'], self.parsers['.c'], repo_path))
         elif '.java' in files_by_lang:
             from ..languages import java as java_lang_module
-            imports_map.update(java_lang_module.pre_scan_java(files_by_lang['.java'], self.parsers['.java']))
+            imports_map.update(java_lang_module.pre_scan_java(files_by_lang['.java'], self.parsers['.java'], repo_path))
         elif '.rb' in files_by_lang:
             from ..languages import ruby as ruby_lang_module
-            imports_map.update(ruby_lang_module.pre_scan_ruby(files_by_lang['.rb'], self.parsers['.rb']))
+            imports_map.update(ruby_lang_module.pre_scan_ruby(files_by_lang['.rb'], self.parsers['.rb'], repo_path))
         elif '.cs' in files_by_lang:
             from ..languages import csharp as csharp_lang_module
-            imports_map.update(csharp_lang_module.pre_scan_csharp(files_by_lang['.cs'], self.parsers['.cs']))
+            imports_map.update(csharp_lang_module.pre_scan_csharp(files_by_lang['.cs'], self.parsers['.cs'], repo_path))
         if '.kt' in files_by_lang:
             from ..languages import kotlin as kotlin_lang_module
-            imports_map.update(kotlin_lang_module.pre_scan_kotlin(files_by_lang['.kt'], self.parsers['.kt']))
+            imports_map.update(kotlin_lang_module.pre_scan_kotlin(files_by_lang['.kt'], self.parsers['.kt'], repo_path))
         if '.scala' in files_by_lang:
             from ..languages import scala as scala_lang_module
-            imports_map.update(scala_lang_module.pre_scan_scala(files_by_lang['.scala'], self.parsers['.scala']))
+            imports_map.update(scala_lang_module.pre_scan_scala(files_by_lang['.scala'], self.parsers['.scala'], repo_path))
         if '.sc' in files_by_lang:
             from ..languages import scala as scala_lang_module
-            imports_map.update(scala_lang_module.pre_scan_scala(files_by_lang['.sc'], self.parsers['.sc']))
+            imports_map.update(scala_lang_module.pre_scan_scala(files_by_lang['.sc'], self.parsers['.sc'], repo_path))
         if '.swift' in files_by_lang:
             from ..languages import swift as swift_lang_module
-            imports_map.update(swift_lang_module.pre_scan_swift(files_by_lang['.swift'], self.parsers['.swift']))
+            imports_map.update(swift_lang_module.pre_scan_swift(files_by_lang['.swift'], self.parsers['.swift'], repo_path))
+        if '.php' in files_by_lang:
+            from ..languages import php as php_lang_module
+            imports_map.update(php_lang_module.pre_scan_php(files_by_lang['.php'], self.parsers['.php'], repo_path))
+        if '.hs' in files_by_lang:
+            from ..languages import haskell as haskell_lang_module
+            imports_map.update(haskell_lang_module.pre_scan_haskell(files_by_lang['.hs'], self.parsers['.hs'], repo_path))
             
         return imports_map
 
@@ -300,7 +314,7 @@ class GraphBuilder:
         print(f"Found {len(files)} files to process")
 
         # Pre-scan for imports (now returns relative paths)
-        imports_map = self._pre_scan_for_imports(files)
+        imports_map = self._pre_scan_for_imports(files, project_path_obj)
         print(f"Pre-scan complete, found {len(imports_map)} imports")
 
         # Process each file
@@ -309,6 +323,7 @@ class GraphBuilder:
         classes_found = 0
         functions_found = 0
         errors = []
+        all_file_data = []
 
         for file_path in files:
             try:
@@ -317,9 +332,11 @@ class GraphBuilder:
                     file_data = self.parse_file(project_path_obj, file_path, is_dependency=False)
 
                     if file_data and "error" not in file_data:
-                        # Add repo_identifier to file_data for relationship creation
+                        # Add repo_identifier and repo_path so the second pass can resolve paths
                         file_data['repo_identifier'] = repo_identifier
+                        file_data['repo_path'] = str(project_path_obj)
                         self.add_file_to_graph(file_data, repo_identifier, imports_map)
+                        all_file_data.append(file_data)
                         files_processed += 1
 
                         classes_found += len(file_data.get('classes', []))
@@ -334,6 +351,12 @@ class GraphBuilder:
                 errors.append(error_msg)
                 print(f"  {error_msg}")
                 files_skipped += 1
+
+        # Second pass: create cross-file relationships (CALL and INHERITS) now that
+        # all nodes exist in the graph.
+        print(f"Creating call and inheritance relationships...")
+        self._create_all_inheritance_links(all_file_data, imports_map)
+        self._create_all_function_calls(all_file_data, imports_map)
 
         print(f"Graph building complete!")
 
@@ -399,8 +422,9 @@ class GraphBuilder:
         repo_path_abs = Path(file_data.get('repo_path', '')).resolve()
         try:
             relative_path = str(Path(file_path_abs).relative_to(repo_path_abs))
-        except ValueError:
-            relative_path = file_name
+        except ValueError as e:
+            error_logger(f"CRITICAL: Cannot calculate relative path for {file_path_abs} from repo {repo_path_abs}: {e}")
+            raise ValueError(f"File {file_path_abs} is not within repository {repo_path_abs}. Ingestion cannot proceed.")
 
         # Read file source code for storage
         file_source_code = None
@@ -613,30 +637,42 @@ class GraphBuilder:
             # Function calls are also handled in a separate pass after all files are processed.
 
     # Second pass to create relationships that depend on all files being present like call functions and class inheritance
-    def _create_function_calls(self, session, file_data: Dict, imports_map: dict):
-        """Create CALLS relationships with a unified, prioritized logic flow for all call types."""
-        # Get repo identifier and relative path
+    def _collect_call_params(self, file_data: Dict, imports_map: dict) -> tuple[list, list]:
+        """
+        Resolve call relationships for a single file and return batched parameter rows.
+
+        Returns two lists:
+        - func_rows: calls where the caller is a known Function/Class (has full context)
+        - file_rows: calls where the caller context is unknown (fall back to File node)
+        """
         repo_identifier = file_data.get('repo_identifier', 'local/unknown')
         repo_path_abs = Path(file_data.get('repo_path', '')).resolve()
         file_path_abs = Path(file_data['path']).resolve()
+
         try:
             caller_relative_path = str(file_path_abs.relative_to(repo_path_abs))
         except ValueError:
-            caller_relative_path = file_path_abs.name
+            debug_log(f"Skipping CALLS collection for {file_path_abs}: not within repo {repo_path_abs}")
+            return [], []
 
         local_names = {f['name'] for f in file_data.get('functions', [])} | \
                       {c['name'] for c in file_data.get('classes', [])}
         local_imports = {imp.get('alias') or imp['name'].split('.')[-1]: imp['name']
                         for imp in file_data.get('imports', [])}
 
+        # Guard against __builtins__ being a module (e.g. in __main__)
+        builtins_set: set = set(__builtins__.keys()) if isinstance(__builtins__, dict) else set(dir(__builtins__))
+
+        func_rows: list = []
+        file_rows: list = []
+
         for call in file_data.get('function_calls', []):
             called_name = call['name']
-            if called_name in __builtins__: continue
+            if called_name in builtins_set:
+                continue
 
-            resolved_path = None
             full_call = call.get('full_name', called_name)
             base_obj = full_call.split('.')[0] if '.' in full_call else None
-
             is_chained_call = full_call.count('.') > 1 if '.' in full_call else False
 
             if is_chained_call and base_obj in ('self', 'this', 'super', 'super()', 'cls', '@'):
@@ -644,20 +680,22 @@ class GraphBuilder:
             else:
                 lookup_name = base_obj if base_obj else called_name
 
-            # 1. Check for local context keywords/direct local names
+            resolved_path: str | None = None
+
+            # 1. Self/local context
             if base_obj in ('self', 'this', 'super', 'super()', 'cls', '@') and not is_chained_call:
                 resolved_path = caller_relative_path
             elif lookup_name in local_names:
                 resolved_path = caller_relative_path
 
-            # 2. Check inferred type if available
+            # 2. Inferred object type
             elif call.get('inferred_obj_type'):
                 obj_type = call['inferred_obj_type']
                 possible_paths = imports_map.get(obj_type, [])
-                if len(possible_paths) > 0:
+                if possible_paths:
                     resolved_path = possible_paths[0]
 
-            # 3. Check imports map with validation against local imports
+            # 3. Imports map
             if not resolved_path:
                 possible_paths = imports_map.get(lookup_name, [])
                 if len(possible_paths) == 1:
@@ -665,23 +703,19 @@ class GraphBuilder:
                 elif len(possible_paths) > 1:
                     if lookup_name in local_imports:
                         full_import_name = local_imports[lookup_name]
-
                         if full_import_name in imports_map:
-                             direct_paths = imports_map[full_import_name]
-                             if direct_paths and len(direct_paths) == 1:
-                                 resolved_path = direct_paths[0]
-
+                            direct_paths = imports_map[full_import_name]
+                            if direct_paths and len(direct_paths) == 1:
+                                resolved_path = direct_paths[0]
                         if not resolved_path:
                             for path in possible_paths:
                                 if full_import_name.replace('.', '/') in path:
                                     resolved_path = path
                                     break
 
+            # 4. Fallback
             if not resolved_path:
-                 warning_logger(f"Could not resolve call {called_name} (lookup: {lookup_name}) in {caller_relative_path}")
-
-            # Fallback resolution
-            if not resolved_path:
+                debug_log(f"Could not resolve call {called_name} (lookup: {lookup_name}) in {caller_relative_path}")
                 if called_name in local_names:
                     resolved_path = caller_relative_path
                 elif called_name in imports_map and imports_map[called_name]:
@@ -691,71 +725,84 @@ class GraphBuilder:
                             if imp_name.replace('.', '/') in path:
                                 resolved_path = path
                                 break
-                        if resolved_path: break
+                        if resolved_path:
+                            break
                     if not resolved_path:
                         resolved_path = candidates[0]
                 else:
                     resolved_path = caller_relative_path
 
+            base_row = {
+                'repo': repo_identifier,
+                'caller_path': caller_relative_path,
+                'called_name': called_name,
+                'called_path': resolved_path,
+                'line_number': call['line_number'],
+                'args': [str(a) for a in call.get('args', [])],
+                'full_call_name': call.get('full_name', called_name),
+            }
+
             caller_context = call.get('context')
             if caller_context and len(caller_context) == 3 and caller_context[0] is not None:
                 caller_name, _, caller_line_number = caller_context
-
-                session.run("""
-                    MATCH (caller) WHERE (caller:Function OR caller:Class)
-                      AND caller.name = $caller_name
-                      AND caller.repo = $repo
-                      AND caller.path = $caller_path
-                      AND caller.line_number = $caller_line_number
-                    MATCH (called) WHERE (called:Function OR called:Class)
-                      AND called.name = $called_name
-                      AND called.repo = $repo
-                      AND called.path = $called_path
-
-                    WITH caller, called
-                    OPTIONAL MATCH (called)-[:CONTAINS]->(init:Function)
-                    WHERE called:Class AND init.name IN ["__init__", "constructor"]
-                    WITH caller, COALESCE(init, called) as final_target
-
-                    MERGE (caller)-[:CALLS {line_number: $line_number, args: $args, full_call_name: $full_call_name}]->(final_target)
-                """,
-                caller_name=caller_name,
-                repo=repo_identifier,
-                caller_path=caller_relative_path,
-                caller_line_number=caller_line_number,
-                called_name=called_name,
-                called_path=resolved_path,
-                line_number=call['line_number'],
-                args=call.get('args', []),
-                full_call_name=call.get('full_name', called_name))
+                func_rows.append({**base_row, 'caller_name': caller_name, 'caller_line_number': caller_line_number})
             else:
-                session.run("""
-                    MATCH (caller:File {repo: $repo, path: $caller_path})
-                    MATCH (called) WHERE (called:Function OR called:Class)
-                      AND called.name = $called_name
-                      AND called.repo = $repo
-                      AND called.path = $called_path
+                file_rows.append(base_row)
 
-                    WITH caller, called
-                    OPTIONAL MATCH (called)-[:CONTAINS]->(init:Function)
-                    WHERE called:Class AND init.name IN ["__init__", "constructor"]
-                    WITH caller, COALESCE(init, called) as final_target
-
-                    MERGE (caller)-[:CALLS {line_number: $line_number, args: $args, full_call_name: $full_call_name}]->(final_target)
-                """,
-                repo=repo_identifier,
-                caller_path=caller_relative_path,
-                called_name=called_name,
-                called_path=resolved_path,
-                line_number=call['line_number'],
-                args=call.get('args', []),
-                full_call_name=call.get('full_name', called_name))
+        return func_rows, file_rows
 
     def _create_all_function_calls(self, all_file_data: list[Dict], imports_map: dict):
-        """Create CALLS relationships for all functions after all files have been processed."""
+        """Create CALLS relationships for all functions using batched UNWIND queries."""
+        all_func_rows: list = []
+        all_file_rows: list = []
+
+        for file_data in all_file_data:
+            func_rows, file_rows = self._collect_call_params(file_data, imports_map)
+            all_func_rows.extend(func_rows)
+            all_file_rows.extend(file_rows)
+
+        info_logger(f"Processing CALLS relationships: {len(all_func_rows)} function-context + {len(all_file_rows)} file-context calls")
+
+        _BATCH_SIZE = 500
+
         with self.driver.session() as session:
-            for file_data in all_file_data:
-                self._create_function_calls(session, file_data, imports_map)
+            # Batch 1: caller is a Function/Class node
+            for i in range(0, len(all_func_rows), _BATCH_SIZE):
+                batch = all_func_rows[i:i + _BATCH_SIZE]
+                session.run("""
+                    UNWIND $rows AS row
+                    MATCH (caller) WHERE (caller:Function OR caller:Class)
+                      AND caller.name = row.caller_name
+                      AND caller.repo = row.repo
+                      AND caller.path = row.caller_path
+                      AND caller.line_number = row.caller_line_number
+                    MATCH (called) WHERE (called:Function OR called:Class)
+                      AND called.name = row.called_name
+                      AND called.repo = row.repo
+                      AND called.path = row.called_path
+                    WITH caller, called, row
+                    OPTIONAL MATCH (called)-[:CONTAINS]->(init:Function)
+                    WHERE called:Class AND init.name IN ["__init__", "constructor"]
+                    WITH caller, COALESCE(init, called) AS final_target, row
+                    MERGE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(final_target)
+                """, rows=batch)
+
+            # Batch 2: caller is a File node (no function context)
+            for i in range(0, len(all_file_rows), _BATCH_SIZE):
+                batch = all_file_rows[i:i + _BATCH_SIZE]
+                session.run("""
+                    UNWIND $rows AS row
+                    MATCH (caller:File {repo: row.repo, path: row.caller_path})
+                    MATCH (called) WHERE (called:Function OR called:Class)
+                      AND called.name = row.called_name
+                      AND called.repo = row.repo
+                      AND called.path = row.called_path
+                    WITH caller, called, row
+                    OPTIONAL MATCH (called)-[:CONTAINS]->(init:Function)
+                    WHERE called:Class AND init.name IN ["__init__", "constructor"]
+                    WITH caller, COALESCE(init, called) AS final_target, row
+                    MERGE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(final_target)
+                """, rows=batch)
 
     def _create_inheritance_links(self, session, file_data: Dict, imports_map: dict):
         """Create INHERITS relationships with a more robust resolution logic."""
@@ -765,8 +812,9 @@ class GraphBuilder:
         file_path_abs = Path(file_data['path']).resolve()
         try:
             caller_relative_path = str(file_path_abs.relative_to(repo_path_abs))
-        except ValueError:
-            caller_relative_path = file_path_abs.name
+        except ValueError as e:
+            warning_logger(f"Skipping inheritance for {file_path_abs}: not within repo {repo_path_abs}")
+            return  # Skip this file's inheritance instead of using wrong path
 
         local_class_names = {c['name'] for c in file_data.get('classes', [])}
         local_imports = {imp.get('alias') or imp['name'].split('.')[-1]: imp['name']
@@ -833,8 +881,9 @@ class GraphBuilder:
         file_path_abs = Path(file_data['path']).resolve()
         try:
             caller_relative_path = str(file_path_abs.relative_to(repo_path_abs))
-        except ValueError:
-            caller_relative_path = file_path_abs.name
+        except ValueError as e:
+            warning_logger(f"Skipping interface inheritance for {file_path_abs}: not within repo {repo_path_abs}")
+            return  # Skip this file's interface inheritance instead of using wrong path
 
         local_type_names = set()
         for type_list in ['classes', 'interfaces', 'structs', 'records']:
@@ -1149,7 +1198,8 @@ class GraphBuilder:
                 self.job_manager.update_job(job_id, total_files=len(files))
             
             debug_log("Starting pre-scan to build imports map...")
-            imports_map = self._pre_scan_for_imports(files)
+            repo_path_resolved = path.resolve() if path.is_dir() else path.parent.resolve()
+            imports_map = self._pre_scan_for_imports(files, repo_path_resolved)
             debug_log(f"Pre-scan complete. Found {len(imports_map)} definitions.")
 
             all_file_data = []

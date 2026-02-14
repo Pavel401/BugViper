@@ -1,97 +1,111 @@
 
 from deepagent.config import config
-from deepagent.models.agent_schemas import ContextData, ReviewResults
+from deepagent.models.agent_schemas import ContextData, Issue, ReconciledReview
+
+
+def _severity_emoji(severity: str) -> str:
+    return {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}.get(severity, "⚪")
+
+
+def _render_issue(issue: Issue) -> list[str]:
+    lines = [
+        f"- {_severity_emoji(issue.severity)} **[{issue.category}] {issue.title}**"
+        f" — `{issue.file}`:{issue.line_start}",
+        f"  {issue.description}",
+    ]
+    if issue.suggestion:
+        lines.append(f"  **Fix**: {issue.suggestion}")
+    return lines
 
 
 def format_github_comment(
-    review_results: ReviewResults,
+    review: ReconciledReview,
     context: ContextData | None,
     pr_number: int,
 ) -> str:
-    """Format ReviewResults + ContextData into a markdown GitHub comment."""
+    """Format a ReconciledReview + ContextData into a structured GitHub comment."""
     parts: list[str] = []
 
-    # Header
+    # ── Header ────────────────────────────────────────────────────────────
     parts.append("## 🐍 BugViper AI Code Review")
     parts.append("")
-    parts.append(f"**PR**: #{pr_number}")
-    parts.append(f"**Model**: {config.review_model}")
+    parts.append(f"**PR**: #{pr_number} | **Model**: {config.review_model}")
+    parts.append("")
+    parts.append(f"**{review.summary}**")
     parts.append("")
     parts.append("---")
     parts.append("")
 
-    # Impact analysis
+    # ── Impact analysis ───────────────────────────────────────────────────
     if context:
+        risk_emoji = {"low": "🟢", "medium": "🟡", "high": "🔴"}.get(context.risk_level, "⚪")
         parts.append("### 📊 Impact Analysis")
         parts.append("")
         parts.append(f"- **Symbols modified**: {len(context.modified_symbols)}")
         parts.append(f"- **Downstream callers**: {context.total_callers}")
-        risk_emoji = {"low": "🟢", "medium": "🟡", "high": "🔴"}.get(context.risk_level, "⚪")
         parts.append(f"- **Risk level**: {risk_emoji} {context.risk_level.upper()}")
         parts.append("")
         parts.append("---")
         parts.append("")
 
-    # Review findings
-    issues = review_results.issues 
-    parts.append("### 🔍 Code Review")
-    parts.append("")
-    parts.append(f"**Summary**: {review_results.summary}")
-    parts.append("")
+    # Bucket issues by status
+    fixed_issues   = [i for i in review.issues if i.status == "fixed"]
+    open_issues    = [i for i in review.issues if i.status == "still_open"]
+    new_issues     = [i for i in review.issues if i.status == "new"]
 
-    if issues:
-        critical = [i for i in issues if i.severity == "critical"]
-        high = [i for i in issues if i.severity == "high"]
-        medium = [i for i in issues if i.severity == "medium"]
-        low = [i for i in issues if i.severity == "low"]
+    # ── Fixed ─────────────────────────────────────────────────────────────
+    if fixed_issues:
+        parts.append("### ✅ Fixed Since Last Review")
+        parts.append("")
+        for issue in fixed_issues:
+            parts.append(f"- ~~**{issue.title}**~~ in `{issue.file}` — resolved")
+        parts.append("")
 
-        if critical:
-            parts.append("#### 🔴 Critical Issues")
-            for issue in critical:
-                parts.append(f"- **[{issue.category}]** {issue.title}")
-                parts.append(f"  - File: `{issue.file}`:{issue.line_start}")
-                parts.append(f"  - {issue.description}")
-                if issue.suggestion:
-                    parts.append(f"  - **Fix**: {issue.suggestion}")
-            parts.append("")
+    # ── Still open ────────────────────────────────────────────────────────
+    if open_issues:
+        parts.append("### 🔁 Still Open")
+        parts.append("")
+        for issue in open_issues:
+            for line in _render_issue(issue):
+                parts.append(line)
+        parts.append("")
 
-        if high:
-            parts.append("#### 🟠 High Priority Issues")
-            for issue in high:
-                parts.append(f"- **{issue.title}** in `{issue.file}`:{issue.line_start}")
-                parts.append(f"  - {issue.description}")
-                if issue.suggestion:
-                    parts.append(f"  - **Fix**: {issue.suggestion}")
-            parts.append("")
+    # ── New issues ────────────────────────────────────────────────────────
+    if new_issues:
+        parts.append("### 🆕 New Issues This Run")
+        parts.append("")
+        critical = [i for i in new_issues if i.severity == "critical"]
+        high     = [i for i in new_issues if i.severity == "high"]
+        medium   = [i for i in new_issues if i.severity == "medium"]
+        low      = [i for i in new_issues if i.severity == "low"]
 
-        if medium:
-            parts.append("#### 🟡 Medium Priority Issues")
-            for issue in medium:
-                parts.append(f"- **{issue.title}** in `{issue.file}`:{issue.line_start}")
-                parts.append(f"  - {issue.description}")
-                if issue.suggestion:
-                    parts.append(f"  - **Fix**: {issue.suggestion}")
-            parts.append("")
+        for group_label, group in [
+            ("🔴 Critical", critical),
+            ("🟠 High", high),
+            ("🟡 Medium", medium),
+            ("🟢 Low", low),
+        ]:
+            if group:
+                parts.append(f"#### {group_label}")
+                for issue in group:
+                    for line in _render_issue(issue):
+                        parts.append(line)
+                parts.append("")
 
-        if low:
-            parts.append("#### 🟢 Low Priority Issues")
-            for issue in low:
-                parts.append(f"- {issue.title} in `{issue.file}`:{issue.line_start}")
-            parts.append("")
-    else:
+    if not fixed_issues and not open_issues and not new_issues:
         parts.append("✅ **No issues found!**")
         parts.append("")
 
-    if review_results.positive_findings:
-        parts.append("#### ✅ Positive Findings")
-        for finding in review_results.positive_findings:
+    # ── Positive findings ─────────────────────────────────────────────────
+    if review.positive_findings:
+        parts.append("### 👍 Positive Findings")
+        for finding in review.positive_findings:
             parts.append(f"- {finding}")
         parts.append("")
 
-    # Footer
+    # ── Footer ────────────────────────────────────────────────────────────
     parts.append("---")
     parts.append("")
-    parts.append("*🤖 Generated by BugViper (PydanticAI)*")
-    parts.append(f"*Powered by {config.review_model}*")
+    parts.append(f"*🤖 Generated by BugViper | Powered by {config.review_model}*")
 
     return "\n".join(parts)

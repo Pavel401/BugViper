@@ -508,8 +508,8 @@ class CLangTreeSitterParser:
         return macros
 
 
-def pre_scan_c(files: list[Path], parser_wrapper) -> dict:
-    """Scans C files to create a map of function/struct/union/enum names to their file paths."""
+def pre_scan_c(files: list[Path], parser_wrapper, repo_path: Path) -> dict:
+    """Scans C files to create a map of function/struct/union/enum names to their RELATIVE file paths."""
     imports_map = {}
     query_str = """
         (function_definition
@@ -557,7 +557,12 @@ def pre_scan_c(files: list[Path], parser_wrapper) -> dict:
                 name = capture.text.decode('utf-8')
                 if name not in imports_map:
                     imports_map[name] = []
-                imports_map[name].append(str(path.resolve()))
+                # Store RELATIVE path
+                try:
+                    relative_path = str(path.relative_to(repo_path))
+                    imports_map[name].append(relative_path)
+                except ValueError:
+                    warning_logger(f"Pre-scan: File {path} not within repo {repo_path}, skipping")
         except Exception as e:
             warning_logger(f"Tree-sitter pre-scan failed for {path}: {e}")
     return imports_map

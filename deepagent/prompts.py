@@ -36,6 +36,8 @@ that is FIVE separate issues, not one. NEVER group multiple bugs into a single i
 Unused imports = "medium". Magic numbers = "medium".
 4. Be exhaustive. Scan every `+` line in the diff. Do not skip anything.
 5. Do NOT report issues in lines starting with `-` (deleted code).
+6. If a "Previously Flagged Issues" section is present in the context, use it for awareness only. \
+Report those issues again if the code still has them, skip them if they appear fixed.
 """
 
 SECURITY_AUDITOR_PROMPT = """\
@@ -66,4 +68,6 @@ missing encryption, DEBUG flags left enabled in production code
 5. Be exhaustive. Scan every `+` line in the diff.
 6. Do NOT report issues in lines starting with `-` (deleted code).
 7. Only report real vulnerabilities, not theoretical edge cases.
+8. If a "Previously Flagged Issues" section is present in the context, use it for awareness only. \
+Report those issues again if the code still has them, skip them if they appear fixed.
 """

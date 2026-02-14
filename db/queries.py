@@ -1391,7 +1391,8 @@ class CodeQueryService:
         all_imports: List[Dict[str, Any]] = []
         all_dependencies: List[Dict[str, Any]] = []
         all_hierarchy: List[Dict[str, Any]] = []
-        seen_symbols: set = set()
+        seen_affected: set = set()  # Track unique affected symbols
+        seen_callers: set = set()   # Track symbols we've looked up callers for
         seen_imports: set = set()
 
         for change in changes:
@@ -1429,17 +1430,25 @@ class CodeQueryService:
             })
 
             symbols = [dict(r) for r in records]
+            
+            # Deduplicate and add to all_affected
             for s in symbols:
                 s["change_file"] = file_path
                 # Keep full source - don't truncate for better context
-            all_affected.extend(symbols)
+                
+                # Deduplicate based on file path + name + line number
+                sym_key = f"{s['file_path']}:{s['name']}:{s['start_line']}"
+                if sym_key not in seen_affected:
+                    seen_affected.add(sym_key)
+                    all_affected.append(s)
 
-            # 2. For each affected symbol, find callers using CodeFinder
+            # 2. For each UNIQUE affected symbol, find callers using CodeFinder
+            # (only look up callers once per symbol across all hunks)
             for sym in symbols:
-                sym_key = f"{file_path}:{sym['name']}"
-                if sym_key in seen_symbols:
-                    continue
-                seen_symbols.add(sym_key)
+                caller_key = f"{sym['file_path']}:{sym['name']}"
+                if caller_key in seen_callers:
+                    continue  # Already looked up callers for this symbol
+                seen_callers.add(caller_key)
 
                 # Use CodeFinder to find who calls this function
                 try:

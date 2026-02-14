@@ -482,13 +482,21 @@ class ScalaLangTreeSitterParser:
         return params
 
 
-def pre_scan_scala(files: list[Path], parser_wrapper) -> dict:
+def pre_scan_scala(files: list[Path], parser_wrapper, repo_path: Path) -> dict:
+    """Pre-scan Scala files to build a name-to-RELATIVE-paths mapping."""
     name_to_files = {}
     
     for path in files:
         try:
             with open(path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
+            
+            # Store RELATIVE path
+            try:
+                relative_path = str(path.relative_to(repo_path))
+            except ValueError:
+                warning_logger(f"Pre-scan: File {path} not within repo {repo_path}, skipping")
+                continue
             
             # package matches
             package_name = ""
@@ -505,14 +513,14 @@ def pre_scan_scala(files: list[Path], parser_wrapper) -> dict:
                 # Simple mapping
                 if name not in name_to_files:
                     name_to_files[name] = []
-                name_to_files[name].append(str(path))
+                name_to_files[name].append(relative_path)
                 
                 # FQN mapping
                 if package_name:
                     fqn = f"{package_name}.{name}"
                     if fqn not in name_to_files:
                         name_to_files[fqn] = []
-                    name_to_files[fqn].append(str(path))
+                    name_to_files[fqn].append(relative_path)
                 
         except Exception as e:
             error_logger(f"Error pre-scanning Scala file {path}: {e}")

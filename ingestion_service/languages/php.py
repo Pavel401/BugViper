@@ -487,6 +487,8 @@ class PhpLangTreeSitterParser:
 
         return calls
 
-def pre_scan_php(files: list[Path], parser_wrapper) -> dict:
+def pre_scan_php(files: list[Path], parser_wrapper, repo_path: Path) -> dict:
+    """Pre-scan PHP files to build a name-to-RELATIVE-paths mapping."""
     name_to_files = {}
+    # TODO: Implement PHP pre-scan when needed
     return name_to_files
