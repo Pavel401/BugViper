@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "b22fab632e54",
+  "strategy": "manual-commit",
+  "branch": "frontend-fixes",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "api/routers/auth.py",
+    "api/routers/ingestion.py",
+    "api/routers/repository.py",
+    "db/schema.py",
+    "frontend/app/(protected)/repositories/page.tsx"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b2/2fab632e54/0/metadata.json",
+      "transcript": "/b2/2fab632e54/0/full.jsonl",
+      "context": "/b2/2fab632e54/0/context.md",
+      "content_hash": "/b2/2fab632e54/0/content_hash.txt",
+      "prompt": "/b2/2fab632e54/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 40,
+    "cache_creation_tokens": 193613,
+    "cache_read_tokens": 2518961,
+    "output_tokens": 7409,
+    "api_call_count": 30
+  }
+}
