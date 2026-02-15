@@ -317,6 +317,9 @@ class BugViperFirebaseService:
         Accepts a ReviewRunData model or a plain dict.
         Returns the run document ID (e.g. "run_2").
         """
+        if not isinstance(pr_number, int) or pr_number <= 0:
+            raise ValueError(f"save_review_run: pr_number must be a positive int, got {pr_number!r}")
+
         repo_key = f"{owner}_{repo}"
         now = datetime.now(timezone.utc).isoformat()
 
@@ -355,9 +358,18 @@ class BugViperFirebaseService:
         self, uid: str, owner: str, repo: str, pr_number: int
     ) -> Optional[dict]:
         """
-        Fetch the most recent review run document.
-        Returns None if no previous run exists.
+        Fetch the most recent review run document for this specific PR.
+
+        Scoping is enforced at two levels:
+        1. Firestore path: .../prs/{pr_number}/reviews  (path-level isolation)
+        2. Field check: returned doc must have prNumber == pr_number  (defensive guard)
+
+        Returns None if no previous run exists for this PR.
         """
+        if not isinstance(pr_number, int):
+            logger.error("get_latest_review_run: pr_number must be an int, got %r", pr_number)
+            return None
+
         repo_key = f"{owner}_{repo}"
         runs_ref = (
             self._db.collection("users")
@@ -371,7 +383,20 @@ class BugViperFirebaseService:
         docs = list(runs_ref.order_by("runNumber", direction="DESCENDING").limit(1).stream())
         if not docs:
             return None
-        return docs[0].to_dict()
+
+        run = docs[0].to_dict()
+
+        # Defensive check: verify the doc belongs to this PR (guards against path bugs)
+        stored_pr = run.get("prNumber")
+        if stored_pr is not None and stored_pr != pr_number:
+            logger.error(
+                "Review run mismatch: expected prNumber=%s, got %s — ignoring stale data",
+                pr_number,
+                stored_pr,
+            )
+            return None
+
+        return run
 
 
 # Module-level convenience instance (triggers Firebase init on import)

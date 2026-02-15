@@ -41,7 +41,7 @@ class CodeQueryService:
         query = """
         MATCH (r:Repository)
         OPTIONAL MATCH (r)-[:CONTAINS*]->(f:File)
-        RETURN COALESCE(r.id, r.repo) as id, r.name as name, r.owner as owner,
+        RETURN r.id as id, r.name as name, r.owner as owner,
                r.url as url, r.path as local_path,
                r.last_commit_hash as last_commit,
                r.created_at as created_at,
@@ -80,7 +80,8 @@ class CodeQueryService:
         """Delete a repository and all its associated data."""
         try:
             query = """
-            MATCH (r:Repository {id: $repo_id})
+            MATCH (r:Repository)
+            WHERE r.id = $repo_id OR r.repo = $repo_id
             OPTIONAL MATCH (r)-[:CONTAINS*]->(n)
             DETACH DELETE r, n
             RETURN count(r) as deleted_count
@@ -88,7 +89,7 @@ class CodeQueryService:
             records, _, _ = self.db.run_query(query, {"repo_id": repo_id})
             return records and records[0]["deleted_count"] > 0
         except Exception as e:
-            print(f"Error deleting repository {repo_id}: {str(e)}")
+            logger.error("Error deleting repository %s: %s", repo_id, e)
             return False
     
     def get_repository_stats(self, repo_id: str) -> Dict[str, Any]:
@@ -638,8 +639,10 @@ class CodeQueryService:
     def get_repository_files(self, repo_id: str) -> List[Dict[str, Any]]:
         """Get all files in a repository."""
         query = """
-        MATCH (r:Repository {id: $repo_id})-[:CONTAINS*]->(f:File)
-        RETURN f.id as id, f.path as path, f.language as language, 
+        MATCH (r:Repository)
+        WHERE r.id = $repo_id OR r.repo = $repo_id
+        MATCH (r)-[:CONTAINS*]->(f:File)
+        RETURN f.id as id, f.path as path, f.language as language,
                f.lines_count as lines_count
         ORDER BY f.path
         """
@@ -773,7 +776,9 @@ class CodeQueryService:
             Dict with verification stats
         """
         query = """
-        MATCH (r:Repository {id: $repo_id})-[:CONTAINS*]->(f:File)
+        MATCH (r:Repository)
+        WHERE r.id = $repo_id OR r.repo = $repo_id
+        MATCH (r)-[:CONTAINS*]->(f:File)
         RETURN count(f) as total_files,
                sum(CASE WHEN f.source_code IS NOT NULL THEN 1 ELSE 0 END) as files_with_source,
                sum(f.lines_count) as total_lines,
@@ -791,7 +796,9 @@ class CodeQueryService:
 
         # Get list of files without source code
         problem_files_query = """
-        MATCH (r:Repository {id: $repo_id})-[:CONTAINS*]->(f:File)
+        MATCH (r:Repository)
+        WHERE r.id = $repo_id OR r.repo = $repo_id
+        MATCH (r)-[:CONTAINS*]->(f:File)
         WHERE f.source_code IS NULL
         RETURN f.path as path, f.id as file_id
         LIMIT 10
@@ -889,7 +896,9 @@ class CodeQueryService:
     def get_repo_config_files(self, repo_id: str) -> List[Dict[str, Any]]:
         """Get all config files in a repository."""
         query = """
-        MATCH (r:Repository {id: $repo_id})-[:HAS_CONFIG]->(cf:ConfigFile)
+        MATCH (r:Repository)
+        WHERE r.id = $repo_id OR r.repo = $repo_id
+        MATCH (r)-[:HAS_CONFIG]->(cf:ConfigFile)
         RETURN cf.id as id, cf.path as path, cf.file_type as file_type,
                cf.project_name as project_name, cf.version as version,
                cf.lines_count as lines_count
@@ -911,7 +920,9 @@ class CodeQueryService:
     def get_repo_dependencies(self, repo_id: str) -> List[Dict[str, Any]]:
         """Get all dependencies in a repository."""
         query = """
-        MATCH (r:Repository {id: $repo_id})-[:HAS_CONFIG]->(cf:ConfigFile)-[:HAS_DEPENDENCY]->(d:Dependency)
+        MATCH (r:Repository)
+        WHERE r.id = $repo_id OR r.repo = $repo_id
+        MATCH (r)-[:HAS_CONFIG]->(cf:ConfigFile)-[:HAS_DEPENDENCY]->(d:Dependency)
         RETURN d.name as name, d.version_spec as version, d.is_dev as is_dev,
                d.source as source, cf.path as config_file
         ORDER BY d.is_dev, d.name
@@ -933,14 +944,15 @@ class CodeQueryService:
         if not self.db.connected:
             # Mock success for testing
             return True
-            
+
         query = """
-        MATCH (r:Repository {id: $repo_id})
+        MATCH (r:Repository)
+        WHERE r.id = $repo_id OR r.repo = $repo_id
         DETACH DELETE r
         RETURN count(r) as deleted_count
         """
         records, _, _ = self.db.run_query(query, {"repo_id": repo_id})
-        
+
         return len(records) > 0 and records[0].get("deleted_count", 0) > 0
     
     def get_repo_overview_extended(self, repo_id: str) -> Dict[str, Any]:

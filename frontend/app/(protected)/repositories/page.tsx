@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -92,6 +93,11 @@ export default function RepositoriesPage() {
   // Active ingestion jobs (keyed by full_name)
   const [ingestingJobs, setIngestingJobs] = useState<Record<string, IngestingJob>>({});
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Stable ref so the interval callback always reads the latest jobs without
+  // being listed as an effect dependency (avoids re-creating the interval on
+  // every status update).
+  const ingestingJobsRef = useRef(ingestingJobs);
+  useEffect(() => { ingestingJobsRef.current = ingestingJobs; }, [ingestingJobs]);
 
   // ── Data loading ─────────────────────────────────────────────────────────────
 
@@ -128,18 +134,29 @@ export default function RepositoriesPage() {
   useEffect(() => { loadRepositories(); }, []);
 
 
-  useEffect(() => {
-    const active = Object.values(ingestingJobs).filter(
-      (j) => !["completed", "failed"].includes(j.status)
-    );
+  // Derived: IDs of jobs that are still running — used as the stable dep array.
+  const activeJobIds = useMemo(
+    () =>
+      Object.values(ingestingJobs)
+        .filter((j) => !["completed", "failed"].includes(j.status))
+        .map((j) => j.jobId)
+        .sort()
+        .join(","),
+    [ingestingJobs],
+  );
 
-    if (active.length === 0) {
+  useEffect(() => {
+    if (!activeJobIds) {
       if (pollRef.current) clearInterval(pollRef.current);
       return;
     }
 
     async function poll() {
-      for (const job of active) {
+      // Read the current snapshot via ref — no stale closure over `ingestingJobs`.
+      const jobs = Object.values(ingestingJobsRef.current).filter(
+        (j) => !["completed", "failed"].includes(j.status)
+      );
+      for (const job of jobs) {
         try {
           const res = await getIngestionJobStatus(job.jobId);
           const next = res.status;
@@ -171,7 +188,7 @@ export default function RepositoriesPage() {
     poll();
     pollRef.current = setInterval(poll, 3000);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [ingestingJobs]);
+  }, [activeJobIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
 
   async function openPicker() {
@@ -346,14 +363,17 @@ export default function RepositoriesPage() {
         )}
       </div>
 
-      {/* Delete confirmation modal */}
-      {deleteTarget !== null && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div
-            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
-            onClick={() => { if (!isDeleting) setDeleteTarget(null); }}
-          />
-          <div className="relative z-10 w-full max-w-sm mx-4 bg-background border rounded-xl shadow-2xl">
+      {/* Delete confirmation dialog — Radix Dialog for focus-trap, Escape, ARIA */}
+      <Dialog.Root
+        open={deleteTarget !== null}
+        onOpenChange={(open) => { if (!open && !isDeleting) setDeleteTarget(null); }}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" />
+          <Dialog.Content
+            className="fixed left-1/2 top-1/2 z-50 w-full max-w-sm -translate-x-1/2 -translate-y-1/2 mx-4 bg-background border rounded-xl shadow-2xl focus:outline-none"
+            onInteractOutside={(e) => { if (isDeleting) e.preventDefault(); }}
+          >
             {/* Icon + title */}
             <div className="flex items-start gap-3 px-6 pt-6 pb-4">
               <div className="flex items-center justify-center w-9 h-9 rounded-full bg-destructive/10 shrink-0 mt-0.5">
@@ -362,24 +382,25 @@ export default function RepositoriesPage() {
                 </svg>
               </div>
               <div className="space-y-1">
-                <p className="font-semibold text-sm">Delete repository</p>
-                <p className="text-sm text-muted-foreground">
+                <Dialog.Title className="font-semibold text-sm">Delete repository</Dialog.Title>
+                <Dialog.Description className="text-sm text-muted-foreground">
                   Are you sure you want to delete{" "}
                   <span className="font-medium text-foreground">{deleteTarget}</span>?
                   This will remove all ingested graph data and cannot be undone.
-                </p>
+                </Dialog.Description>
               </div>
             </div>
 
             {/* Actions */}
             <div className="flex items-center justify-end gap-2 px-6 py-4 border-t">
-              <button
-                onClick={() => setDeleteTarget(null)}
-                disabled={isDeleting}
-                className="px-3 py-1.5 text-sm rounded-md border hover:bg-accent transition-colors disabled:opacity-50"
-              >
-                Cancel
-              </button>
+              <Dialog.Close asChild>
+                <button
+                  disabled={isDeleting}
+                  className="px-3 py-1.5 text-sm rounded-md border hover:bg-accent transition-colors disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+              </Dialog.Close>
               <button
                 onClick={confirmDelete}
                 disabled={isDeleting}
@@ -396,9 +417,9 @@ export default function RepositoriesPage() {
                 ) : "Delete"}
               </button>
             </div>
-          </div>
-        </div>
-      )}
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
 
       {/* GitHub Repo Picker Modal */}
       {showPicker && (

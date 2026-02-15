@@ -554,6 +554,10 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int) -> None:
       7. [DEBUG MODE] LLM call skipped — all context written to review dir
     """
     try:
+        if not isinstance(pr_number, int) or pr_number <= 0:
+            logger.error("execute_pr_review: invalid pr_number %r — aborting", pr_number)
+            return
+
         logger.info(f"Starting review pipeline for {owner}/{repo}#{pr_number}")
         repo_id = f"{owner}/{repo}"  # matches the repo identifier stored in the graph
 
