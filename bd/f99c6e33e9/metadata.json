@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "bdf99c6e33e9",
+  "strategy": "manual-commit",
+  "branch": "frontend-fixes",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "api/routers/ingestion.py",
+    "api/routers/repository.py",
+    "api/services/firebase_service.py",
+    "api/services/review_service.py",
+    "common/firebase_models.py",
+    "db/queries.py",
+    "db/schema.py",
+    "frontend/app/(protected)/repositories/page.tsx"
+  ],
+  "sessions": [
+    {
+      "metadata": "/bd/f99c6e33e9/0/metadata.json",
+      "transcript": "/bd/f99c6e33e9/0/full.jsonl",
+      "context": "/bd/f99c6e33e9/0/context.md",
+      "content_hash": "/bd/f99c6e33e9/0/content_hash.txt",
+      "prompt": "/bd/f99c6e33e9/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 59,
+    "cache_creation_tokens": 241729,
+    "cache_read_tokens": 5997838,
+    "output_tokens": 20659,
+    "api_call_count": 47
+  }
+}
