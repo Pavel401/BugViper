@@ -130,21 +130,28 @@ async def ingest_github_repository(
             job_tracker.update_status(job_id, JobStatus.COMPLETED, stats=job_stats)
 
             # ── Update Firestore with ingestion stats ──────────────────────
-            firebase_service.upsert_repo_metadata(
-                uid,
-                request.owner,
-                request.repo_name,
-                RepoIngestionUpdate(
-                    ingestion_status="ingested",
-                    ingested_at=datetime.now(timezone.utc).isoformat(),
-                    files_processed=stats.files_processed,
-                    files_skipped=stats.files_skipped,
-                    classes_found=stats.classes_found,
-                    functions_found=stats.functions_found,
-                    imports_found=stats.imports_found,
-                    total_lines=stats.total_lines,
-                ),
-            )
+            try:
+                firebase_service.upsert_repo_metadata(
+                    uid,
+                    request.owner,
+                    request.repo_name,
+                    RepoIngestionUpdate(
+                        ingestion_status="ingested",
+                        ingested_at=datetime.now(timezone.utc).isoformat(),
+                        files_processed=stats.files_processed,
+                        files_skipped=stats.files_skipped,
+                        classes_found=stats.classes_found,
+                        functions_found=stats.functions_found,
+                        imports_found=stats.imports_found,
+                        total_lines=stats.total_lines,
+                    ),
+                )
+            except Exception as fb_exc:
+                logger.warning(
+                    "Firestore stats update failed after successful ingestion "
+                    "(uid=%s owner=%s repo=%s): %s",
+                    uid, request.owner, request.repo_name, fb_exc,
+                )
             logger.info("Dev-mode ingestion completed for %s/%s", request.owner, request.repo_name)
 
         except Exception as exc:
@@ -154,12 +161,19 @@ async def ingest_github_repository(
                 JobStatus.FAILED,
                 error_message=f"{type(exc).__name__}: {exc}",
             )
-            firebase_service.upsert_repo_metadata(
-                uid,
-                request.owner,
-                request.repo_name,
-                RepoIngestionError(ingestion_status="failed", error_message=str(exc)),
-            )
+            try:
+                firebase_service.upsert_repo_metadata(
+                    uid,
+                    request.owner,
+                    request.repo_name,
+                    RepoIngestionError(ingestion_status="failed", error_message=str(exc)),
+                )
+            except Exception as fb_exc:
+                logger.warning(
+                    "Firestore error update failed after ingestion failure "
+                    "(uid=%s owner=%s repo=%s): %s",
+                    uid, request.owner, request.repo_name, fb_exc,
+                )
             raise HTTPException(status_code=500, detail=str(exc))
 
         return IngestionJobResponse(

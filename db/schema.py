@@ -322,17 +322,17 @@ CYPHER_QUERIES = {
     "get_graph_stats": """
         MATCH (r:Repository)
         OPTIONAL MATCH (r)-[:CONTAINS*]->(f:File)
-        OPTIONAL MATCH (f)-[:DEFINES]->(c:Class)
-        OPTIONAL MATCH (f)-[:DEFINES]->(fn:Function)
-        OPTIONAL MATCH (f)-[:DEFINES]->(v:Variable)
-        OPTIONAL MATCH (f)-[:HAS_IMPORT]->(i:Import)
+        OPTIONAL MATCH (f)-[:CONTAINS]->(c:Class)
+        OPTIONAL MATCH (f)-[:CONTAINS]->(fn:Function)
+        OPTIONAL MATCH (f)-[:CONTAINS]->(v:Variable)
+        OPTIONAL MATCH (f)-[:IMPORTS]->(m:Module)
         RETURN
             count(DISTINCT r) as repositories,
             count(DISTINCT f) as files,
             count(DISTINCT c) as classes,
             count(DISTINCT fn) as functions,
             count(DISTINCT v) as variables,
-            count(DISTINCT i) as modules
+            count(DISTINCT m) as modules
     """,
 
     "get_repo_stats": """
@@ -340,17 +340,19 @@ CYPHER_QUERIES = {
         WHERE r.repo = $repo_id OR r.id = $repo_id
         OPTIONAL MATCH (r)-[:CONTAINS*]->(f:File)
         WITH r, collect(DISTINCT f) as files
+        WITH r, files,
+             reduce(s = 0, f IN files | s + COALESCE(f.lines_count, 0)) as line_count
         UNWIND CASE WHEN size(files) = 0 THEN [null] ELSE files END AS f
-        OPTIONAL MATCH (f)-[:DEFINES]->(c:Class)
-        OPTIONAL MATCH (f)-[:DEFINES]->(fn:Function)
-        OPTIONAL MATCH (f)-[:HAS_IMPORT]->(i:Import)
+        OPTIONAL MATCH (f)-[:CONTAINS]->(c:Class)
+        OPTIONAL MATCH (f)-[:CONTAINS]->(fn:Function)
+        OPTIONAL MATCH (f)-[:IMPORTS]->(m:Module)
         RETURN
             count(DISTINCT f) as file_count,
             count(DISTINCT c) as class_count,
             count(DISTINCT fn) as function_count,
             0 as method_count,
-            sum(COALESCE(f.lines_count, 0)) as line_count,
-            count(DISTINCT i) as import_count,
+            line_count,
+            count(DISTINCT m) as import_count,
             [lang IN collect(DISTINCT f.language) WHERE lang IS NOT NULL AND lang <> 'unknown'] as languages
     """,
 

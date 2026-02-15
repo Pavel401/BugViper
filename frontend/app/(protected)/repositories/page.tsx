@@ -350,6 +350,7 @@ export default function RepositoriesPage() {
                   </div>
                   <button
                     onClick={() => setDeleteTarget(repo.id ?? `${repoOwner}/${repoNameVal}`)}
+                    aria-label={`Delete repository ${repoOwner}/${repoNameVal}`}
                     className="p-2 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors shrink-0 ml-3"
                   >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
