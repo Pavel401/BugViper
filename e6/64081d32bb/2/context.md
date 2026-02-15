@@ -1,0 +1,8 @@
+# Session Context
+
+## User Prompts
+
+### Prompt 1
+
+So for all the things that we store in the firebase we should have proper data class using the basemodel , see i the ingestion and in other places we are dicrly calling the "owner" , "repoName" like this , instead we should just creatr a data class and use it
+
