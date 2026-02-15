@@ -3,14 +3,19 @@
   "checkpoint_id": "e664081d32bb",
   "strategy": "manual-commit",
   "branch": "frontend-fixes",
-  "checkpoints_count": 4,
+  "checkpoints_count": 11,
   "files_touched": [
     "api/routers/ingestion.py",
     "api/routers/repository.py",
     "api/routers/webhook.py",
     "api/services/firebase_service.py",
     "common/job_models.py",
-    "frontend/app/(protected)/repositories/page.tsx"
+    "db/queries.py",
+    "db/schema.py",
+    "frontend/app/(protected)/repositories/page.tsx",
+    "frontend/components/delete-repo-dialog.tsx",
+    "frontend/components/ui/dialog.tsx",
+    "frontend/next.config.ts"
   ],
   "sessions": [
     {
@@ -19,13 +24,20 @@
       "context": "/e6/64081d32bb/0/context.md",
       "content_hash": "/e6/64081d32bb/0/content_hash.txt",
       "prompt": "/e6/64081d32bb/0/prompt.txt"
+    },
+    {
+      "metadata": "/e6/64081d32bb/1/metadata.json",
+      "transcript": "/e6/64081d32bb/1/full.jsonl",
+      "context": "/e6/64081d32bb/1/context.md",
+      "content_hash": "/e6/64081d32bb/1/content_hash.txt",
+      "prompt": "/e6/64081d32bb/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 65,
-    "cache_creation_tokens": 216748,
-    "cache_read_tokens": 4323973,
-    "output_tokens": 21044,
-    "api_call_count": 48
+    "input_tokens": 146,
+    "cache_creation_tokens": 382973,
+    "cache_read_tokens": 7977550,
+    "output_tokens": 33435,
+    "api_call_count": 107
   }
 }

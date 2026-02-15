@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "e664081d32bb",
+  "session_id": "8be6e28e-c5fe-4fa5-a34d-fe638c51c3ca",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-15T06:24:37.410202Z",
+  "branch": "frontend-fixes",
+  "checkpoints_count": 7,
+  "files_touched": [
+    "db/queries.py",
+    "db/schema.py",
+    "frontend/app/(protected)/repositories/page.tsx",
+    "frontend/components/delete-repo-dialog.tsx",
+    "frontend/components/ui/dialog.tsx",
+    "frontend/next.config.ts"
+  ],
+  "agent": "Claude Code",
+  "transcript_identifier_at_start": "2c3fdfe6-7523-4d4c-aaed-7982daaa67c9",
+  "token_usage": {
+    "input_tokens": 81,
+    "cache_creation_tokens": 166225,
+    "cache_read_tokens": 3653577,
+    "output_tokens": 12391,
+    "api_call_count": 59
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-15T06:24:37.340701Z",
+    "agent_lines": 404,
+    "human_added": 600,
+    "human_modified": 197,
+    "human_removed": 0,
+    "total_committed": 1201,
+    "agent_percentage": 33.63863447127394
+  }
+}
