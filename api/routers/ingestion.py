@@ -38,7 +38,9 @@ async def ingest_github_repository(
     neo4j_client: Neo4jClient = Depends(get_neo4j_client),
     user: dict = Depends(get_current_user),
 ):
-    uid = user["uid"]
+    uid = user.get("uid")
+    if not uid:
+        raise HTTPException(status_code=401, detail="Authenticated user has no UID")
 
     # Prevent duplicate active jobs for the same repo
     existing = job_tracker.find_active_job(request.owner, request.repo_name)
@@ -59,28 +61,34 @@ async def ingest_github_repository(
         logger.warning("Could not fetch GitHub metadata for %s/%s", request.owner, request.repo_name)
 
     # ── Write initial repo doc to Firestore (status: pending) ─────────────
-    firebase_service.upsert_repo_metadata(
-        uid,
-        request.owner,
-        request.repo_name,
-        RepoMetadata(
-            owner=request.owner,
-            repo_name=request.repo_name,
-            full_name=gh_meta.get("full_name", f"{request.owner}/{request.repo_name}"),
-            description=gh_meta.get("description"),
-            language=gh_meta.get("language"),
-            stars=gh_meta.get("stars", 0),
-            forks=gh_meta.get("forks", 0),
-            private=gh_meta.get("private", False),
-            default_branch=gh_meta.get("default_branch", request.branch or "main"),
-            size=gh_meta.get("size", 0),
-            topics=gh_meta.get("topics", []),
-            github_created_at=gh_meta.get("created_at"),
-            github_updated_at=gh_meta.get("updated_at"),
-            branch=request.branch,
-            ingestion_status="pending",
-        ),
-    )
+    try:
+        firebase_service.upsert_repo_metadata(
+            uid,
+            request.owner,
+            request.repo_name,
+            RepoMetadata(
+                owner=request.owner,
+                repo_name=request.repo_name,
+                full_name=gh_meta.get("full_name", f"{request.owner}/{request.repo_name}"),
+                description=gh_meta.get("description"),
+                language=gh_meta.get("language"),
+                stars=gh_meta.get("stars", 0),
+                forks=gh_meta.get("forks", 0),
+                private=gh_meta.get("private", False),
+                default_branch=gh_meta.get("default_branch", request.branch or "main"),
+                size=gh_meta.get("size", 0),
+                topics=gh_meta.get("topics", []),
+                github_created_at=gh_meta.get("created_at"),
+                github_updated_at=gh_meta.get("updated_at"),
+                branch=request.branch,
+                ingestion_status="pending",
+            ),
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to write initial Firestore repo doc (uid=%s owner=%s repo=%s branch=%s): %s",
+            uid, request.owner, request.repo_name, request.branch, exc,
+        )
 
     job_id = str(uuid.uuid4())
     payload = IngestionTaskPayload(

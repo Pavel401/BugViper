@@ -95,6 +95,8 @@ class RepoIngestionError(BaseModel):
     Partial update written when ingestion fails.
     """
 
+    model_config = ConfigDict(populate_by_name=True)
+
     ingestion_status: str = Field("failed", serialization_alias="ingestionStatus")
     error_message: str = Field(serialization_alias="errorMessage")
 

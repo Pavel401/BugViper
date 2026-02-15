@@ -2,9 +2,9 @@
 Repository management endpoints - Advanced implementation with Neo4j integration.
 """
 
+import logging
 from fastapi import APIRouter, HTTPException, Query, Depends, Path
 from typing import List, Dict, Any, Optional
-import os
 
 from db.client import Neo4jClient
 from db.queries import CodeQueryService
@@ -12,7 +12,22 @@ from db.schema import CodeGraphSchema
 from api.dependencies import get_neo4j_client, get_current_user
 from api.services.firebase_service import firebase_service
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _cleanup_firestore_repo(uid: str, owner: str, repo_name: str) -> None:
+    """
+    Delete the Firestore repo metadata document.  Non-fatal — logs on failure.
+    """
+    try:
+        firebase_service.delete_repo_metadata(uid, owner, repo_name)
+    except Exception as exc:
+        logger.warning(
+            "Failed to delete Firestore repo metadata (uid=%s owner=%s repo=%s): %s",
+            uid, owner, repo_name, exc,
+            exc_info=True,
+        )
 
 
 def get_query_service(db: Neo4jClient = Depends(get_neo4j_client)) -> CodeQueryService:
@@ -146,10 +161,7 @@ async def delete_repository_by_name(
         deleted = query_service.delete_repository(repo_id)
 
         # Always clean up Firestore regardless of whether Neo4j had the repo
-        try:
-            firebase_service.delete_repo_metadata(user["uid"], username, repo_name)
-        except Exception:
-            pass  # Firestore doc may not exist; non-fatal
+        _cleanup_firestore_repo(user["uid"], username, repo_name)
 
         if deleted:
             return {"message": f"Repository {repo_id} deleted successfully", "deleted_repository_id": repo_id}
@@ -177,10 +189,7 @@ async def delete_repository(
         # Parse owner/repo from repo_id and clean up Firestore
         if "/" in repo_id:
             owner, repo_name = repo_id.split("/", 1)
-            try:
-                firebase_service.delete_repo_metadata(user["uid"], owner, repo_name)
-            except Exception:
-                pass  # Non-fatal
+            _cleanup_firestore_repo(user["uid"], owner, repo_name)
 
         if deleted:
             return {"message": f"Repository {repo_id} deleted successfully", "deleted_repository_id": repo_id}
