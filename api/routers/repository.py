@@ -156,12 +156,16 @@ async def delete_repository_by_name(
     """
     Delete a repository by username and repo name from Neo4j and Firestore.
     """
+    uid = user.get("uid")
+    if not uid:
+        raise HTTPException(status_code=401, detail="Authenticated user has no UID")
+
     repo_id = f"{username}/{repo_name}"
     try:
         deleted = query_service.delete_repository(repo_id)
 
         # Always clean up Firestore regardless of whether Neo4j had the repo
-        _cleanup_firestore_repo(user["uid"], username, repo_name)
+        _cleanup_firestore_repo(uid, username, repo_name)
 
         if deleted:
             return {"message": f"Repository {repo_id} deleted successfully", "deleted_repository_id": repo_id}
@@ -183,13 +187,26 @@ async def delete_repository(
     """
     Delete a repository and all its associated data from Neo4j and Firestore.
     """
+    uid = user.get("uid")
+    if not uid:
+        raise HTTPException(status_code=401, detail="Authenticated user has no UID")
+
+    if "/" not in repo_id:
+        logger.warning(
+            "delete_repository called with malformed repo_id %r (expected owner/repo format)",
+            repo_id,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=f"repo_id must be in owner/repo format, got: {repo_id!r}",
+        )
+
     try:
         deleted = query_service.delete_repository(repo_id)
 
         # Parse owner/repo from repo_id and clean up Firestore
-        if "/" in repo_id:
-            owner, repo_name = repo_id.split("/", 1)
-            _cleanup_firestore_repo(user["uid"], owner, repo_name)
+        owner, repo_name = repo_id.split("/", 1)
+        _cleanup_firestore_repo(uid, owner, repo_name)
 
         if deleted:
             return {"message": f"Repository {repo_id} deleted successfully", "deleted_repository_id": repo_id}

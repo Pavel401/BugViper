@@ -57,7 +57,7 @@ def login(body: LoginRequest, user: dict = Depends(get_current_user)):
             github_profile=gh_profile,
             firebase_claims=user,
         )
-        return UserProfile(**profile)
+        return UserProfile(**profile.model_dump(by_alias=True))
     except Exception as exc:
         logger.exception("Login failed for uid=%s", user.get("uid"))
         raise HTTPException(status_code=500, detail="Login failed") from exc
@@ -71,7 +71,7 @@ def ensure_user(user: dict = Depends(get_current_user)):
             uid=user["uid"],
             firebase_claims=user,
         )
-        return UserProfile(**profile)
+        return UserProfile(**profile.model_dump(by_alias=True))
     except Exception as exc:
         logger.exception("Ensure user failed for uid=%s", user.get("uid"))
         raise HTTPException(status_code=500, detail="Failed to ensure user") from exc
@@ -83,7 +83,7 @@ def get_me(user: dict = Depends(get_current_user)):
     profile = firebase_service.get_user(uid=user["uid"])
     if profile is None:
         raise HTTPException(status_code=404, detail="User not found")
-    return UserProfile(**profile)
+    return UserProfile(**profile.model_dump(by_alias=True))
 
 
 @router.get("/github/repos", response_model=list[GitHubRepo])
