@@ -1,0 +1,37 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "e664081d32bb",
+  "session_id": "59e617bb-6c8b-48f4-867a-d8a975554627",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-15T06:24:37.273407Z",
+  "branch": "frontend-fixes",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "api/routers/ingestion.py",
+    "api/routers/repository.py",
+    "api/routers/webhook.py",
+    "api/services/firebase_service.py",
+    "common/job_models.py",
+    "frontend/app/(protected)/repositories/page.tsx"
+  ],
+  "agent": "Claude Code",
+  "transcript_identifier_at_start": "003f4f2e-75d7-466e-ac45-13e262565508",
+  "checkpoint_transcript_start": 271,
+  "transcript_lines_at_start": 271,
+  "token_usage": {
+    "input_tokens": 65,
+    "cache_creation_tokens": 216748,
+    "cache_read_tokens": 4323973,
+    "output_tokens": 21044,
+    "api_call_count": 48
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-15T06:24:37.126564Z",
+    "agent_lines": 509,
+    "human_added": 255,
+    "human_modified": 159,
+    "human_removed": 0,
+    "total_committed": 923,
+    "agent_percentage": 55.146262188515706
+  }
+}

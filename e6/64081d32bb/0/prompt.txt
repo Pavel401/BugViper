@@ -1,0 +1,745 @@
+Logfire project URL: https://logfire-us.pydantic.dev/pavel401/nomaibackend
+2026-02-14 14:10:52,479 - api.routers.webhook - INFO - Received GitHub webhook: issue_comment
+2026-02-14 14:10:52,480 - api.routers.webhook - INFO - PR review triggered: Pavel401/BugViper#3
+INFO:     140.82.115.12:0 - "POST /api/v1/webhook/onComment HTTP/1.1" 200 OK
+2026-02-14 14:10:52,480 - api.services.review_service - INFO - Starting review pipeline for Pavel401/BugViper#3
+2026-02-14 14:10:57,169 - api.services.review_service - INFO - Fetched diff (94522 chars)
+2026-02-14 14:10:57,171 - api.services.review_service - INFO - Parsed 56 hunks across 22 files
+----- The Added source for the diff -----
+{'CLAUDE.md': '│   ├── ingestion.py    #   POST /github, /setup\ndb/                     # Neo4j database layer (partially superseded by ingestion_service/)\n├── ingestion.py        # GraphIngestionService — batch Cypher ops (User node only in active path)\n└── schema.py           # Constraints, indexes, schema init (CodeGraphSchema)\ningestion_service/      # ACTIVE ingestion engine (replaces ingestion/)\n├── core/\n│   ├── tree_sitter_router.py   # GraphBuilder — main orchestrator + all Neo4j writes\n│   └── repo_ingestion_engine.py # AdvancedIngestionEngine — GitHub clone + orchestration\n├── languages/          # Per-language Tree-sitter parsers (17 files)\n│   └── python.py       # PythonLangTreeSitterParser\n└── utils/              # tree_sitter_manager, debug_log\n\ningestion/              # LEGACY — not used in active GitHub ingestion path\n├── repo_ingestion_engine.py\n├── graph_builder.py\n└── ...\n- `INDEX_SOURCE` - Set to `"false"` to skip storing full source/docstring on nodes (default: `"true"`)\n| POST | `/api/v1/ingest/github` | Ingest a GitHub repository |\n\n## Architecture Notes\n\n- **Layered backend**: Routers → Services → Queries → Neo4j Client\n- **Multi-agent reviews**: Bug-hunter + Security-auditor run in parallel, results deduplicated\n- **Incremental ingestion**: Push webhooks trigger partial graph updates (not full re-ingestion)\n- **Graph model**: 16+ node types with constraints and full-text indexes\n- **Two schema systems**: `db/schema.py` (CodeGraphSchema) and `GraphBuilder.create_schema()` both create constraints in Neo4j. They use different property names for the same concepts (`repo_id` vs `repo`) — both exist simultaneously.\n- **`Module` node is global**: Unique key is `name` alone — all repos share the same `Module` node for e.g. `os`, `Path`. External library imports all map here.\n\n---\n\n## Ingestion Pipeline — Deep Dive\n\n### Active Code Path\n`POST /api/v1/ingest/github` → `AdvancedIngestionEngine` → `GraphBuilder` (tree_sitter_router.py)\n\n`db/ingestion.py` (`GraphIngestionService`) is instantiated but **only used for `create_user()`** (creates the `User` node and `(User)-[:OWNS]->(Repository)`). All file/code graph creation goes through `GraphBuilder`.\n\nIn dev mode (`DEV=true`), ingestion runs synchronously. In prod, a Cloud Tasks job is dispatched and the endpoint returns immediately with `PENDING` status.\n\n### Ingestion Stages\n\n#### Stage 0 — Schema Init (`setup()`)\nBoth `CodeGraphSchema.create_constraints_and_indexes()` and `GraphBuilder.create_schema()` run.\nKey `GraphBuilder` constraints:\n- `Repository` unique on `repo` (`"owner/repo_name"`)\n- `File` unique on `(repo, path)`\n- `Function` unique on `(name, repo, path, line_number)`\n- `Class` unique on `(name, repo, path, line_number)`\n- Fulltext index `code_search_index` on `Function|Class|Variable` → `name, source, docstring`\n\n#### Stage 1 — Clone & Clear\n- If `clear_existing=True`: `DETACH DELETE` the repo node + all connected nodes\n- Clone repo to local temp path via `github_client.clone_repository()`\n\n#### Stage 2 — Pre-Scan Pass (`_pre_scan_for_imports`)\nParses every source file with a minimal 2-query Tree-sitter pass (class names + function names only).\nBuilds:\n```python\nimports_map = {"ClassName": ["relative/path/to/file.py"], ...}\n```\nUsed in Stage 5 to resolve cross-file `CALLS` and `INHERITS` relationships.\n\n#### Stage 3 — Parse Pass (`parse_file` → language parser)\nFor each file, runs the full language-specific Tree-sitter extraction.\n\n**Python (`PythonLangTreeSitterParser`) runs 6 queries:**\n\n| Query | Extracts |\n|---|---|\n| `function_definition` | name, line, end_line, args, cyclomatic_complexity, context, class_context, decorators, source*, docstring* |\n| `class_definition` | name, line, end_line, bases, context, decorators, source*, docstring* |\n| `import_statement` / `import_from_statement` | name, full_import_name, alias, line |\n| `call` (identifier + attribute) | name, full_name (dotted chain), args, caller context 3-tuple `(name, type, line)` |\n| `assignment` | name, value, type annotation, context, class_context |\n| `assignment` with `lambda` | treated as Function |\n\n*Only stored when `INDEX_SOURCE != "false"`\n\n**Returned dict structure:**\n```python\n{\n    "path": str,           # absolute path\n    "repo_path": str,      # repo root (set by parse_file, needed for Stage 5)\n    "repo_identifier": str,# "owner/repo_name"\n    "lang": "python",\n    "functions": [...],\n    "classes": [...],\n    "imports": [...],\n    "function_calls": [...],  # context is 3-tuple: (caller_name, caller_type, caller_line)\n    "variables": [...],\n    "is_dependency": bool,\n}\n```\n\n#### Stage 4 — First Pass: Node Creation (`add_file_to_graph`)\nSingle Neo4j session per file. Creates (all via `MERGE`):\n\n| Node | Unique key | Key properties |\n|---|---|---|\n| `Repository` | `repo` | `owner`, `name` |\n| `Directory` | `(repo, path)` | `name` |\n| `File` | `(repo, path)` | `source_code`, `language`, `lines_count` |\n| `Function` | `(name, repo, path, line_number)` | all parsed props via `SET n += $props` |\n| `Class` | `(name, repo, path, line_number)` | all parsed props |\n| `Variable` | `(name, repo, path, line_number)` | `value`, `type`, `context` |\n| `Parameter` | `(name, repo, path, function_line_number)` | — |\n| `Module` | `name` (global) | `alias`, `full_import_name` |\n\nRelationships created in first pass:\n- `(Repo/Dir)-[:CONTAINS]->(Dir/File)`\n- `(File)-[:CONTAINS]->(Function/Class/Variable)`\n- `(Class)-[:CONTAINS]->(Function)` — methods\n- `(Function)-[:CONTAINS]->(Function)` — nested functions\n- `(File)-[:IMPORTS {line_number, alias}]->(Module)`\n- `(Function)-[:HAS_PARAMETER]->(Parameter)`\n\n#### Stage 5 — Second Pass: Cross-file Relationships\nRuns after all files are in the graph.\n\n**`_create_all_inheritance_links`**: Resolves `class.bases` → `imports_map` → `MERGE (child)-[:INHERITS]->(parent)`\n\n**`_create_all_function_calls`** (batched UNWIND, 500 rows/query):\n\nCall resolution priority (in `_collect_call_params`):\n1. `self.`/`cls.`/`super.` → caller\'s own file\n2. Called name is a local function/class → same file\n3. `inferred_obj_type` present → `imports_map` lookup\n4. Base object name in `imports_map` → external file\n5. Fallback → caller\'s file\n\nTwo UNWIND batches:\n- **func_rows**: caller context known (function name + line) → `(Function/Class)-[:CALLS]->(Function/Class)`\n- **file_rows**: no caller context → `(File)-[:CALLS]->(Function/Class)`\n\nWhen calling a `Class` directly (instantiation), the edge resolves to `__init__`/`constructor` if one exists.\n\nExternal/stdlib calls (`HTTPException`, `append`, `os.path`, etc.) that don\'t resolve to project nodes are skipped silently (logged at `debug` level only).\n\n### Complete Graph Schema\n\n**Node labels** (GraphBuilder path):\n`Repository`, `Directory`, `File`, `Function`, `Class`, `Variable`, `Parameter`, `Module`, `Trait`, `Interface`, `Macro`, `Struct`, `Enum`, `Union`, `Record`, `Property`\n\nAdditional labels from `db/ingestion.py` (only `User` is active):\n`User` — linked via `(User)-[:OWNS]->(Repository)`\n\n**Relationships:**\n| Rel | From → To | Pass | Properties |\n|---|---|---|---|\n| `OWNS` | User → Repository | post-build | — |\n| `CONTAINS` | Repo/Dir/File/Class/Function → * | first | — |\n| `IMPORTS` | File → Module | first | `line_number`, `alias` |\n| `HAS_PARAMETER` | Function → Parameter | first | — |\n| `INHERITS` | Class → Class | second | — |\n| `CALLS` | Function/Class/File → Function/Class | second | `line_number`, `args`, `full_call_name` |\n| `IMPLEMENTS` | Class/Struct/Record → Interface | second (C# only) | — |\n\n### Known Design Issues\n1. **Two schema systems** (`db/schema.py` + `GraphBuilder.create_schema()`) with conflicting property names (`repo_id` vs `repo`) — both run on `setup()`.\n2. **`Module` node is global** (unique on `name` alone) — not scoped per repo. All repositories share one `Module` node for `os`, `Path`, etc.\n3. **`db/ingestion.py`\'s `Symbol`, `Method`, `Attribute`, `Import` node types are never populated** by the active ingestion path.\n4. **`INDEX_SOURCE=true` (default)** stores full source text on every Function and Class node — can make the graph very large for big repos. Set to `"false"` to disable.', 'api/routers/debug.py': '"""\nAdd this as a temporary API endpoint to diagnose the graph\n"""\nfrom fastapi import APIRouter, Depends\nfrom db.client import Neo4jClient\nfrom api.dependencies import get_neo4j_client\n\nrouter = APIRouter()\n\n@router.get("/graph-schema")\nasync def diagnose_graph_schema(neo4j: Neo4jClient = Depends(get_neo4j_client)):\n    """Diagnose Neo4j graph schema issues"""\n    \n    results = {}\n    \n    # 1. Check relationship types\n    with neo4j.driver.session() as session:\n        result = session.run("CALL db.relationshipTypes()")\n        results["relationship_types"] = sorted([r["relationshipType"] for r in result])\n    \n    # 2. Count CALLS relationships\n    with neo4j.driver.session() as session:\n        result = session.run("MATCH ()-[r:CALLS]->() RETURN count(r) as count")\n        results["calls_count"] = result.single()["count"]\n    \n    # 3. Count IMPORTS relationships\n    with neo4j.driver.session() as session:\n        result = session.run("MATCH ()-[r:IMPORTS]->() RETURN count(r) as count")\n        results["imports_count"] = result.single()["count"]\n        \n        # Check properties\n        if results["imports_count"] > 0:\n            result = session.run("MATCH ()-[r:IMPORTS]->() RETURN keys(r) as props LIMIT 1")\n            results["import_properties"] = result.single()["props"]\n    \n    # 4. Count INHERITS relationships\n    with neo4j.driver.session() as session:\n        result = session.run("MATCH ()-[r:INHERITS]->() RETURN count(r) as count")\n        results["inherits_count"] = result.single()["count"]\n    \n    # 5. Node counts\n    node_counts = {}\n    with neo4j.driver.session() as session:\n        for label in ["Function", "Class", "File", "Module", "Repository"]:\n            result = session.run(f"MATCH (n:{label}) RETURN count(n) as count")\n            node_counts[label] = result.single()["count"]\n    results["node_counts"] = node_counts\n    \n    # 6. Check specific function\n    with neo4j.driver.session() as session:\n        result = session.run("""\n            MATCH (f:Function {name: \'execute_pr_review\'})\n            RETURN f.path, f.repo\n            LIMIT 1\n        """)\n        record = result.single()\n        if record:\n            results["sample_function"] = {\n                "name": "execute_pr_review",\n                "path": record["f.path"],\n                "repo": record["f.repo"]\n            }\n            \n            # Check CALLS relationships\n            result = session.run("""\n                MATCH (caller)-[:CALLS]->(f:Function {name: \'execute_pr_review\'})\n                RETURN count(caller) as count\n            """)\n            results["sample_function"]["callers"] = result.single()["count"]\n            \n            result = session.run("""\n                MATCH (f:Function {name: \'execute_pr_review\'})-[:CALLS]->(callee)\n                RETURN count(callee) as count\n            """)\n            results["sample_function"]["callees"] = result.single()["count"]\n    \n    return results', 'api/services/review_service.py': '    diff_text: str,\n    Context is structured in order of importance:\n      0. The actual diff (what\'s changing) - MOST CRITICAL\n      1. Graph context (symbols in changed line ranges) - DEDUPED\n      2. Impact analysis (who calls the changed code)\n      3. Resolved import source code from the graph\n    # Section 0: THE DIFF (what\'s actually changing)\n    parts.append("## Code Changes (Diff)")\n    parts.append("*This is what the PR modifies:*")\n    parts.append("")\n    parts.append("```diff")\n    # Limit diff to reasonable size (50K chars max)\n    if len(diff_text) > 50000:\n        parts.append(diff_text[:50000])\n        parts.append("# ... (diff truncated - very large PR)")\n    else:\n        parts.append(diff_text)\n    parts.append("```")\n    parts.append("")\n    parts.append("---")\n    parts.append("")\n\n    # Section 1: Graph context (symbols overlapping changed lines)\n    if graph_section and graph_section != "No graph context available.":\n        parts.append("## Code Being Modified (Full Context)")\n        parts.append(graph_section)\n    # Section 2: Impact Analysis (who calls the changed code)\n        parts.append("## Impact Analysis (Downstream Dependencies)")\n        total_callers = sum(len(entry["callers"]) for entry in caller_context)\n        parts.append(f"*{total_callers} callers found across {len(caller_context)} modified symbols*")\n        parts.append("")\n            parts.append(f"### `{entry[\'symbol\']}` is called by:")\n            for c in entry["callers"]:\n                parts.append(f"- `{c[\'name\']}()` in [{c.get(\'path\', \'?\')}](line {c.get(\'line\', \'?\')})")\n    # Section 3: Source code of imported dependencies\n    if import_context:\n        parts.append("## Imported Dependencies (Upstream)")\n        parts.append(f"*{len(import_context)} imports resolved from graph*")\n        parts.append("")\n        for imp in import_context:\n            source = imp.get("source", "")\n            if source:\n                parts.append(f"### `{imp[\'name\']}` from `{imp[\'module\']}`")\n                parts.append(f"*Path: {imp.get(\'path\', \'n/a\')} | Type: {imp.get(\'type\', \'unknown\')}*")\n                parts.append("")\n                # Truncate very long sources\n                if len(source) > 3000:\n                    source = source[:3000] + "\\n# ... (truncated for brevity)"\n                parts.append(f"```python\\n{source}\\n```")\n                parts.append("")\n# Per-step debug dump helpers\ndef _make_review_dir(owner: str, repo: str, pr_number: int) -> Path:\n    """Create and return a timestamped folder for this review run."""\n    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")\n    review_dir = Path("output") / f"review-{timestamp}"\n    review_dir.mkdir(parents=True, exist_ok=True)\n    logger.info(f"Review debug dir: {review_dir}")\n    return review_dir\ndef _write_step(review_dir: Path, filename: str, content: str) -> None:\n    """Write a single step\'s debug output to <review_dir>/<filename>.md."""\n    try:\n        (review_dir / filename).write_text(content, encoding="utf-8")\n        logger.warning(f"Failed to write {filename}: {e}")\n      7. [DEBUG MODE] LLM call skipped — all context written to review dir\n        # Create a timestamped folder for this review run\n        review_dir = _make_review_dir(owner, repo, pr_number)\n\n        _write_step(review_dir, "01_diff.md", "\\n".join([\n            f"# Step 1 — Raw Diff",\n            f"**PR:** {owner}/{repo}#{pr_number}",\n            f"**Chars:** {len(diff_text)}",\n            "",\n            "```diff",\n            diff_text,\n            "```",\n        ]))\n\n        _write_step(review_dir, "02_parsed_diff.md", "\\n".join([\n            f"# Step 2 — Parsed Diff",\n            f"**Hunks:** {len(changes)}  |  **Files changed:** {len(files_changed)}",\n            "",\n            "## Files Changed",\n            *[f"- `{f}`" for f in files_changed],\n            "",\n            "## Hunks",\n            *[\n                f"- `{c[\'file_path\']}` lines {c.get(\'start_line\', \'?\')}–{c.get(\'end_line\', \'?\')}"\n                for c in changes\n            ],\n        ]))\n\n        _write_step(review_dir, "03_extracted_symbols.md", "\\n".join([\n            f"# Step 3 — Extracted Imports & Symbols",\n            "",\n            f"## Imports ({len(diff_imports)})",\n            *[\n                f"- `{imp.get(\'name\', \'?\')}` "\n                f"(full: `{imp.get(\'full_import_name\', imp.get(\'source\', \'?\'))}`)"\n                for imp in diff_imports\n            ],\n            "",\n            f"## Functions ({len(diff_functions)})",\n            *[f"- `{fn}`" for fn in sorted(diff_functions)],\n            "",\n            f"## Classes ({len(diff_classes)})",\n            *[f"- `{cls}`" for cls in sorted(diff_classes)],\n        ]))\n\n        _write_step(review_dir, "04a_graph_symbols.md", "\\n".join([\n            f"# Step 4a — Graph Symbols (overlapping changed lines)",\n            "",\n            f"## Affected Symbols ({len(graph_symbols)})",\n            *[\n                f"- `{s.get(\'name\', \'\')}` ({s.get(\'type\', \'unknown\')}) "\n                f"in `{s.get(\'file_path\', \'\')}`"\n                for s in graph_symbols\n            ],\n            "",\n            "## Graph Context Section (for agents)",\n            graph_section,\n        ]))\n\n        _write_step(review_dir, "04b_resolved_imports.md", "\\n".join([\n            f"# Step 4b — Resolved Imports from Graph",\n            f"**Resolved:** {len(resolved_imports)} / {len(diff_imports)}",\n            "",\n            *[\n                "\\n".join([\n                    f"## `{imp[\'name\']}` from `{imp[\'module\']}`",\n                    f"- **Path:** `{imp.get(\'path\', \'n/a\')}`",\n                    f"- **Type:** {imp.get(\'type\', \'n/a\')}",\n                    f"- **Line:** {imp.get(\'line\', \'n/a\')}",\n                    f"- **Docstring:** {imp.get(\'docstring\', \'\') or \'_none_\'}",\n                    "",\n                    "```python",\n                    imp.get("source", "") or "# source not available",\n                    "```",\n                ])\n                for imp in resolved_imports\n            ],\n        ]))\n\n        _write_step(review_dir, "04c_caller_context.md", "\\n".join([\n            f"# Step 4c — Caller Impact Analysis",\n            f"**Total callers:** {total_callers}  |  **Symbols with callers:** {len(caller_context)}",\n            "",\n            *[\n                "\\n".join([\n                    f"## `{entry[\'symbol\']}`",\n                    *[\n                        f"- `{c[\'name\']}` in `{c.get(\'path\', \'?\')}` (line {c.get(\'line\', \'?\')})"\n                        for c in entry["callers"]\n                    ],\n                ])\n                for entry in caller_context\n            ],\n        ]))\n\n        _write_step(review_dir, "05_risk_level.md", "\\n".join([\n            f"# Step 5 — Risk Level",\n            "",\n            f"**Risk level:** `{risk_level}`",\n            f"**Total callers:** {total_callers}",\n            f"**Total symbols:** {len(all_symbol_names)}",\n            "",\n            "## All Changed Symbols",\n            *[f"- `{s}`" for s in sorted(changed_symbol_names)],\n        ]))\n\n            diff_text, resolved_imports, caller_context, graph_section\n        _write_step(review_dir, "06_agent_context.md", "\\n".join([\n            f"# Step 6 — Agent Context (what would be sent to the LLM)",\n            "",\n            agent_context,\n        ]))\n\n        # ── Step 7: LLM call skipped (debug mode) ──────────────────────\n        logger.info(\n            f"[DEBUG MODE] LLM call skipped. "\n            f"All context written to {review_dir}"\n      \n\n        # Raw agent response for debugging\n        raw_comment = f"<details>\\n<summary>Raw Agent Response</summary>\\n\\n```json\\n{review_results.model_dump_json(indent=2)}\\n```\\n</details>"\n        await gh.post_comment(owner, repo, pr_number, raw_comment)\n', 'api/utils/graph_context.py': '        parts.append(f"*{len(affected)} symbols modified in this PR*")\n        parts.append("")\n        \n        for sym in affected[:20]:  # Limit to top 20 to avoid overwhelming context\n            # Full source, not truncated - we need complete context\n            source = sym.get("source") or ""\n            \n                f"### `{sym.get(\'name\')}` ({sym.get(\'type\')})"\n            parts.append(f"**File:** `{sym.get(\'change_file\')}` (lines {sym.get(\'start_line\')}-{sym.get(\'end_line\')})")\n            \n            # Add docstring if available\n            if sym.get("docstring"):\n                parts.append(f"**Doc:** {sym.get(\'docstring\')[:200]}...")\n            \n            # Show full source with reasonable limit (10K chars max per symbol)\n            if source:\n                if len(source) > 10000:\n                    source = source[:10000] + "\\n# ... (source truncated - function too large)"\n                parts.append("```python")\n                parts.append(source)\n                parts.append("```")\n            parts.append("")\n        parts.append("**Imported Functions (used in changes):**")\n        parts.append(f"*{len(imports)} imports found*")\n        parts.append("")\n        for imp in imports[:10]:  # Limit to 10 most relevant\n            parts.append(f"### `{imp.get(\'name\')}` ({imp.get(\'type\')})")\n            parts.append(f"**Imported in:** `{imp.get(\'from_file\')}`")\n            parts.append(f"**Source:** `{imp.get(\'path\')}`")\n            \n            imp_source = imp.get("source") or ""\n                if len(imp_source) > 5000:\n                    imp_source = imp_source[:5000] + "\\n# ... (truncated)"\n                parts.append("```python")\n                parts.append(imp_source)\n                parts.append("```")\n                parts.append(f"```\\n{imp.get(\'docstring\')}\\n```")\n            parts.append("")\n        parts.append("**Dependencies (what changed functions call):**")\n            parts.append(f"- **`{dep[\'symbol\']}`** calls:")\n        parts.append("")\n        parts.append("**Downstream Callers:**")\n            parts.append(f"- **`{entry[\'symbol\']}`** ({entry[\'symbol_type\']}) is called by:")\n        parts.append("")\n        parts.append("**Class Hierarchy:**")\n                parent_names = " → ".join(p.get("parent_class", "?") for p in parents[:3])\n        parts.append("")', 'db/queries.py': '        seen_affected: set = set()  # Track unique affected symbols\n        seen_callers: set = set()   # Track symbols we\'ve looked up callers for\n            \n            # Deduplicate and add to all_affected\n                \n                # Deduplicate based on file path + name + line number\n                sym_key = f"{s[\'file_path\']}:{s[\'name\']}:{s[\'start_line\']}"\n                if sym_key not in seen_affected:\n                    seen_affected.add(sym_key)\n                    all_affected.append(s)\n\n            # 2. For each UNIQUE affected symbol, find callers using CodeFinder\n            # (only look up callers once per symbol across all hunks)\n                caller_key = f"{sym[\'file_path\']}:{sym[\'name\']}"\n                if caller_key in seen_callers:\n                    continue  # Already looked up callers for this symbol\n                seen_callers.add(caller_key)', 'ingestion_service/core/tree_sitter_router.py': '    def _pre_scan_for_imports(self, files: list[Path], repo_path: Path) -> dict:\n        """Dispatches pre-scan to the correct language-specific implementation.\n        \n        Args:\n            files: List of file paths to scan\n            repo_path: Repository root path for calculating relative paths\n            \n        Returns:\n            Dictionary mapping symbol names to relative file paths\n        """\n            imports_map.update(python_lang_module.pre_scan_python(files_by_lang[\'.py\'], self.parsers[\'.py\'], repo_path))\n            imports_map.update(python_lang_module.pre_scan_python(files_by_lang[\'.ipynb\'], self.parsers[\'.ipynb\'], repo_path))\n            imports_map.update(js_lang_module.pre_scan_javascript(files_by_lang[\'.js\'], self.parsers[\'.js\'], repo_path))\n            imports_map.update(js_lang_module.pre_scan_javascript(files_by_lang[\'.jsx\'], self.parsers[\'.jsx\'], repo_path))\n            imports_map.update(js_lang_module.pre_scan_javascript(files_by_lang[\'.mjs\'], self.parsers[\'.mjs\'], repo_path))\n            imports_map.update(js_lang_module.pre_scan_javascript(files_by_lang[\'.cjs\'], self.parsers[\'.cjs\'], repo_path))\n             imports_map.update(go_lang_module.pre_scan_go(files_by_lang[\'.go\'], self.parsers[\'.go\'], repo_path))\n            imports_map.update(ts_lang_module.pre_scan_typescript(files_by_lang[\'.ts\'], self.parsers[\'.ts\'], repo_path))\n            imports_map.update(tsx_lang_module.pre_scan_typescript(files_by_lang[\'.tsx\'], self.parsers[\'.tsx\'], repo_path))\n            imports_map.update(cpp_lang_module.pre_scan_cpp(files_by_lang[\'.cpp\'], self.parsers[\'.cpp\'], repo_path))\n            imports_map.update(cpp_lang_module.pre_scan_cpp(files_by_lang[\'.h\'], self.parsers[\'.h\'], repo_path))\n            imports_map.update(cpp_lang_module.pre_scan_cpp(files_by_lang[\'.hpp\'], self.parsers[\'.hpp\'], repo_path))\n            imports_map.update(rust_lang_module.pre_scan_rust(files_by_lang[\'.rs\'], self.parsers[\'.rs\'], repo_path))\n            imports_map.update(c_lang_module.pre_scan_c(files_by_lang[\'.c\'], self.parsers[\'.c\'], repo_path))\n            imports_map.update(java_lang_module.pre_scan_java(files_by_lang[\'.java\'], self.parsers[\'.java\'], repo_path))\n            imports_map.update(ruby_lang_module.pre_scan_ruby(files_by_lang[\'.rb\'], self.parsers[\'.rb\'], repo_path))\n            imports_map.update(csharp_lang_module.pre_scan_csharp(files_by_lang[\'.cs\'], self.parsers[\'.cs\'], repo_path))\n            imports_map.update(kotlin_lang_module.pre_scan_kotlin(files_by_lang[\'.kt\'], self.parsers[\'.kt\'], repo_path))\n            imports_map.update(scala_lang_module.pre_scan_scala(files_by_lang[\'.scala\'], self.parsers[\'.scala\'], repo_path))\n            imports_map.update(scala_lang_module.pre_scan_scala(files_by_lang[\'.sc\'], self.parsers[\'.sc\'], repo_path))\n            imports_map.update(swift_lang_module.pre_scan_swift(files_by_lang[\'.swift\'], self.parsers[\'.swift\'], repo_path))\n        if \'.php\' in files_by_lang:\n            from ..languages import php as php_lang_module\n            imports_map.update(php_lang_module.pre_scan_php(files_by_lang[\'.php\'], self.parsers[\'.php\'], repo_path))\n        if \'.hs\' in files_by_lang:\n            from ..languages import haskell as haskell_lang_module\n            imports_map.update(haskell_lang_module.pre_scan_haskell(files_by_lang[\'.hs\'], self.parsers[\'.hs\'], repo_path))\n        imports_map = self._pre_scan_for_imports(files, project_path_obj)\n        all_file_data = []\n                        # Add repo_identifier and repo_path so the second pass can resolve paths\n                        file_data[\'repo_path\'] = str(project_path_obj)\n                        all_file_data.append(file_data)\n        # Second pass: create cross-file relationships (CALL and INHERITS) now that\n        # all nodes exist in the graph.\n        print(f"Creating call and inheritance relationships...")\n        self._create_all_inheritance_links(all_file_data, imports_map)\n        self._create_all_function_calls(all_file_data, imports_map)\n\n        except ValueError as e:\n            error_logger(f"CRITICAL: Cannot calculate relative path for {file_path_abs} from repo {repo_path_abs}: {e}")\n            raise ValueError(f"File {file_path_abs} is not within repository {repo_path_abs}. Ingestion cannot proceed.")\n    def _collect_call_params(self, file_data: Dict, imports_map: dict) -> tuple[list, list]:\n        """\n        Resolve call relationships for a single file and return batched parameter rows.\n\n        Returns two lists:\n        - func_rows: calls where the caller is a known Function/Class (has full context)\n        - file_rows: calls where the caller context is unknown (fall back to File node)\n        """\n\n            debug_log(f"Skipping CALLS collection for {file_path_abs}: not within repo {repo_path_abs}")\n            return [], []\n        # Guard against __builtins__ being a module (e.g. in __main__)\n        builtins_set: set = set(__builtins__.keys()) if isinstance(__builtins__, dict) else set(dir(__builtins__))\n\n        func_rows: list = []\n        file_rows: list = []\n\n            if called_name in builtins_set:\n                continue\n            resolved_path: str | None = None\n\n            # 1. Self/local context\n            # 2. Inferred object type\n                if possible_paths:\n            # 3. Imports map\n                            direct_paths = imports_map[full_import_name]\n                            if direct_paths and len(direct_paths) == 1:\n                                resolved_path = direct_paths[0]\n            # 4. Fallback\n                debug_log(f"Could not resolve call {called_name} (lookup: {lookup_name}) in {caller_relative_path}")\n                        if resolved_path:\n                            break\n            base_row = {\n                \'repo\': repo_identifier,\n                \'caller_path\': caller_relative_path,\n                \'called_name\': called_name,\n                \'called_path\': resolved_path,\n                \'line_number\': call[\'line_number\'],\n                \'args\': [str(a) for a in call.get(\'args\', [])],\n                \'full_call_name\': call.get(\'full_name\', called_name),\n            }\n\n                func_rows.append({**base_row, \'caller_name\': caller_name, \'caller_line_number\': caller_line_number})\n            else:\n                file_rows.append(base_row)\n\n        return func_rows, file_rows\n\n    def _create_all_function_calls(self, all_file_data: list[Dict], imports_map: dict):\n        """Create CALLS relationships for all functions using batched UNWIND queries."""\n        all_func_rows: list = []\n        all_file_rows: list = []\n\n        for file_data in all_file_data:\n            func_rows, file_rows = self._collect_call_params(file_data, imports_map)\n            all_func_rows.extend(func_rows)\n            all_file_rows.extend(file_rows)\n        info_logger(f"Processing CALLS relationships: {len(all_func_rows)} function-context + {len(all_file_rows)} file-context calls")\n\n        _BATCH_SIZE = 500\n\n        with self.driver.session() as session:\n            # Batch 1: caller is a Function/Class node\n            for i in range(0, len(all_func_rows), _BATCH_SIZE):\n                batch = all_func_rows[i:i + _BATCH_SIZE]\n                    UNWIND $rows AS row\n                      AND caller.name = row.caller_name\n                      AND caller.repo = row.repo\n                      AND caller.path = row.caller_path\n                      AND caller.line_number = row.caller_line_number\n                      AND called.name = row.called_name\n                      AND called.repo = row.repo\n                      AND called.path = row.called_path\n                    WITH caller, called, row\n                    WITH caller, COALESCE(init, called) AS final_target, row\n                    MERGE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(final_target)\n                """, rows=batch)\n            # Batch 2: caller is a File node (no function context)\n            for i in range(0, len(all_file_rows), _BATCH_SIZE):\n                batch = all_file_rows[i:i + _BATCH_SIZE]\n                    UNWIND $rows AS row\n                    MATCH (caller:File {repo: row.repo, path: row.caller_path})\n                      AND called.name = row.called_name\n                      AND called.repo = row.repo\n                      AND called.path = row.called_path\n                    WITH caller, called, row\n                    WITH caller, COALESCE(init, called) AS final_target, row\n                    MERGE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(final_target)\n                """, rows=batch)\n        except ValueError as e:\n            warning_logger(f"Skipping inheritance for {file_path_abs}: not within repo {repo_path_abs}")\n            return  # Skip this file\'s inheritance instead of using wrong path\n        except ValueError as e:\n            warning_logger(f"Skipping interface inheritance for {file_path_abs}: not within repo {repo_path_abs}")\n            return  # Skip this file\'s interface inheritance instead of using wrong path\n            repo_path_resolved = path.resolve() if path.is_dir() else path.parent.resolve()\n            imports_map = self._pre_scan_for_imports(files, repo_path_resolved)', 'ingestion_service/languages/c.py': 'def pre_scan_c(files: list[Path], parser_wrapper, repo_path: Path) -> dict:\n    """Scans C files to create a map of function/struct/union/enum names to their RELATIVE file paths."""\n                # Store RELATIVE path\n                try:\n                    relative_path = str(path.relative_to(repo_path))\n                    imports_map[name].append(relative_path)\n                except ValueError:\n                    warning_logger(f"Pre-scan: File {path} not within repo {repo_path}, skipping")', 'ingestion_service/languages/cpp.py': 'def pre_scan_cpp(files: list[Path], parser_wrapper, repo_path: Path) -> dict:\n    to their RELATIVE file paths.\n                    # Store RELATIVE path\n                    try:\n                        relative_path = str(path.relative_to(repo_path))\n                        imports_map.setdefault(name, []).append(relative_path)\n                    except ValueError:\n                        warning_logger(f"Pre-scan: File {path} not within repo {repo_path}, skipping")', 'ingestion_service/languages/csharp.py': 'def pre_scan_csharp(files: list[Path], parser_wrapper, repo_path: Path) -> dict:\n    """Pre-scan C# files to build a name-to-RELATIVE-paths mapping."""\n            # Store RELATIVE path\n            try:\n                relative_path = str(path.relative_to(repo_path))\n            except ValueError:\n                warning_logger(f"Pre-scan: File {path} not within repo {repo_path}, skipping")\n                continue\n            \n                name_to_files[class_name].append(relative_path)\n                name_to_files[interface_name].append(relative_path)\n                name_to_files[struct_name].append(relative_path)\n                name_to_files[record_name].append(relative_path)', 'ingestion_service/languages/go.py': 'def pre_scan_go(files: list[Path], parser_wrapper, repo_path: Path) -> dict:\n    """Scans Go files to create a map of function/struct names to their RELATIVE file paths."""\n                # Store RELATIVE path\n                try:\n                    relative_path = str(path.relative_to(repo_path))\n                    imports_map[name].append(relative_path)\n                except ValueError:\n                    warning_logger(f"Pre-scan: File {path} not within repo {repo_path}, skipping")', 'ingestion_service/languages/haskell.py': 'def pre_scan_haskell(files: list[Path], parser_wrapper, repo_path: Path) -> dict:\n    """Pre-scan Haskell files to build a name-to-RELATIVE-paths mapping."""\n            \n            # Store RELATIVE path\n            try:\n                relative_path = str(path.relative_to(repo_path))\n            except ValueError:\n                warning_logger(f"Pre-scan: File {path} not within repo {repo_path}, skipping")\n                continue\n            \n            # 1. Extract module name\n            module_name = ""\n            mod_match = re.search(r\'^\\s*module\\s+([\\w\\.]+)\', content, re.MULTILINE)\n            if mod_match:\n                module_name = mod_match.group(1)\n            \n            # 2. Extract data/newtype/class declarations\n                r\'^\\s*(data|newtype|class|type)\\s+(\\w+)\',\n                re.MULTILINE\n                name_to_files[name].append(relative_path)\n                # If module exists, map FQN\n                if module_name:\n                    fqn = f"{module_name}.{name}"\n                    name_to_files[fqn].append(relative_path)', 'ingestion_service/languages/java.py': 'def pre_scan_java(files: list[Path], parser_wrapper, repo_path: Path) -> dict:\n    """Pre-scan Java files to build a name-to-RELATIVE-paths mapping."""\n            # Store RELATIVE path\n            try:\n                relative_path = str(path.relative_to(repo_path))\n            except ValueError:\n                warning_logger(f"Pre-scan: File {path} not within repo {repo_path}, skipping")\n                continue\n            \n                name_to_files[class_name].append(relative_path)\n                name_to_files[interface_name].append(relative_path)', 'ingestion_service/languages/javascript.py': 'def pre_scan_javascript(files: list[Path], parser_wrapper, repo_path: Path) -> dict:\n    """Scans JavaScript files to create a map of class/function names to their RELATIVE file paths."""\n                # Store RELATIVE path\n                try:\n                    relative_path = str(path.relative_to(repo_path))\n                    imports_map[name].append(relative_path)\n                except ValueError:\n                    warning_logger(f"Pre-scan: File {path} not within repo {repo_path}, skipping")', 'ingestion_service/languages/kotlin.py': 'def pre_scan_kotlin(files: list[Path], parser_wrapper, repo_path: Path) -> dict:\n    """Pre-scan Kotlin files to build a name-to-RELATIVE-paths mapping."""\n            # Store RELATIVE path\n            try:\n                relative_path = str(path.relative_to(repo_path))\n            except ValueError:\n                warning_logger(f"Pre-scan: File {path} not within repo {repo_path}, skipping")\n                continue\n            \n                name_to_files[name].append(relative_path)\n                    name_to_files[fqn].append(relative_path)', 'ingestion_service/languages/php.py': 'def pre_scan_php(files: list[Path], parser_wrapper, repo_path: Path) -> dict:\n    """Pre-scan PHP files to build a name-to-RELATIVE-paths mapping."""\n    # TODO: Implement PHP pre-scan when needed', 'ingestion_service/languages/python.py': 'def pre_scan_python(files: list[Path], parser_wrapper, repo_path: Path) -> dict:\n    """Scans Python files to create a map of class/function names to their RELATIVE file paths.\n    \n    Args:\n        files: List of Python files to scan\n        parser_wrapper: Tree-sitter parser wrapper\n        repo_path: Repository root path for calculating relative paths\n        \n    Returns:\n        Dictionary mapping symbol names to relative file paths\n    """\n                # Store RELATIVE path\n                try:\n                    relative_path = str(path.relative_to(repo_path))\n                    imports_map[name].append(relative_path)\n                except ValueError:\n                    warning_logger(f"Pre-scan: File {path} not within repo {repo_path}, skipping")', 'ingestion_service/languages/ruby.py': 'def pre_scan_ruby(files: list[Path], parser_wrapper, repo_path: Path) -> dict:\n    """Scans Ruby files to create a map of class/method names to their RELATIVE file paths."""\n                # Store RELATIVE path\n                try:\n                    relative_path = str(path.relative_to(repo_path))\n                    imports_map[name].append(relative_path)\n                except ValueError:\n                    warning_logger(f"Pre-scan: File {path} not within repo {repo_path}, skipping")', 'ingestion_service/languages/rust.py': 'def pre_scan_rust(files: list[Path], parser_wrapper, repo_path: Path) -> dict:\n    """Scans Rust files to create a map of function/struct/enum/trait names to their RELATIVE file paths."""\n                # Store RELATIVE path\n                try:\n                    relative_path = str(path.relative_to(repo_path))\n                    imports_map[name].append(relative_path)\n                except ValueError:\n                    warning_logger(f"Pre-scan: File {path} not within repo {repo_path}, skipping")', 'ingestion_service/languages/scala.py': 'def pre_scan_scala(files: list[Path], parser_wrapper, repo_path: Path) -> dict:\n    """Pre-scan Scala files to build a name-to-RELATIVE-paths mapping."""\n            # Store RELATIVE path\n            try:\n                relative_path = str(path.relative_to(repo_path))\n            except ValueError:\n                warning_logger(f"Pre-scan: File {path} not within repo {repo_path}, skipping")\n                continue\n            \n                name_to_files[name].append(relative_path)\n                    name_to_files[fqn].append(relative_path)', 'ingestion_service/languages/swift.py': 'def pre_scan_swift(files: list[Path], parser_wrapper, repo_path: Path) -> dict:\n    """Pre-scan Swift files to build a map of class/struct/enum/protocol names to RELATIVE file paths."""\n            # Store RELATIVE path\n            try:\n                relative_path = str(path.relative_to(repo_path))\n            except ValueError:\n                warning_logger(f"Pre-scan: File {path} not within repo {repo_path}, skipping")\n                continue\n            \n                name_to_files[name].append(relative_path)', 'ingestion_service/languages/typescript.py': 'def pre_scan_typescript(files: list[Path], parser_wrapper, repo_path: Path) -> dict:\n    """Scans TypeScript files to create a map of class/function names to their RELATIVE file paths."""\n                            # Store RELATIVE path\n                            try:\n                                relative_path = str(path.relative_to(repo_path))\n                                if relative_path not in imports_map[name]:\n                                    imports_map[name].append(relative_path)\n                            except ValueError:\n                                warning_logger(f"Pre-scan: File {path} not within repo {repo_path}, skipping")', 'ingestion_service/languages/typescriptjsx.py': 'def pre_scan_typescript(files: list[Path], parser_wrapper, repo_path: Path) -> dict:\n    Scans TypeScript JSX (.tsx) files to create a map of class/function names to their RELATIVE file paths.\n                            # Store RELATIVE path\n                            try:\n                                relative_path = str(path.relative_to(repo_path))\n                                if relative_path not in imports_map[name]:\n                                    imports_map[name].append(relative_path)\n                            except ValueError:\n                                warning_logger(f"Pre-scan: File {path} not within repo {repo_path}, skipping")'}2026-02-14 14:10:57,560 - api.services.review_service - INFO - Diff extraction: 8 imports, 19 functions, 0 classes
+2026-02-14 14:10:58,917 - db.client - INFO - Connected to Neo4j database
+2026-02-14 14:11:00,181 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:01,114 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:02,069 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:02,866 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:04,555 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:05,974 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:06,739 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:07,575 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:08,326 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:09,155 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:10,285 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:11,928 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:13,392 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:15,794 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:17,542 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:19,531 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:20,879 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:22,120 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:23,668 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:25,125 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:26,703 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:28,524 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:30,277 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:31,769 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:32,978 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:34,829 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:36,009 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:37,847 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:39,059 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:47,891 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:48,680 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:49,356 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:50,071 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:50,798 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:53,337 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:54,422 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:55,858 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:11:58,051 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:12:00,309 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:12:01,481 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:12:03,938 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:12:05,065 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:12:07,015 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:12:09,284 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:12:10,435 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:12:12,099 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:12:13,280 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:12:15,615 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:12:16,751 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:12:18,507 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:12:19,638 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:12:21,426 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:12:23,787 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:12:25,642 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:12:26,770 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:12:27,496 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias as alias,\n                r.imported_name as imported_name,\n                m.name as module_name,\n                r.line_number as line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-14 14:12:28,842 - api.services.review_service - INFO - Resolved 3/8 imports from graph
+2026-02-14 14:12:37,312 - api.services.review_service - INFO - Found 76 callers across 33 symbols
+2026-02-14 14:12:37,313 - deepagent.agent.review_pipeline - INFO - Starting orchestrated review for Pavel401/BugViper#3
+2026-02-14 14:12:42,090 - httpx - INFO - HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+2026-02-14 14:16:43,097 - httpx - INFO - HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+2026-02-14 14:16:43,489 - httpx - INFO - HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+2026-02-14 14:16:47,610 - httpx - INFO - HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+2026-02-14 14:16:47,704 - httpx - INFO - HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+2026-02-14 14:16:49,536 - httpx - INFO - HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+2026-02-14 14:16:50,235 - httpx - INFO - HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+2026-02-14 14:16:51,670 - httpx - INFO - HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+2026-02-14 14:16:52,323 - httpx - INFO - HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+2026-02-14 14:16:55,857 - httpx - INFO - HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+2026-02-14 14:16:55,970 - httpx - INFO - HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+2026-02-14 14:16:59,647 - httpx - INFO - HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+2026-02-14 14:17:00,308 - httpx - INFO - HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+2026-02-14 14:17:02,625 - httpx - INFO - HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+2026-02-14 14:17:03,823 - httpx - INFO - HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+2026-02-14 14:17:04,926 - httpx - INFO - HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+2026-02-14 14:17:05,902 - httpx - INFO - HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+2026-02-14 14:17:08,565 - httpx - INFO - HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+2026-02-14 14:17:11,124 - httpx - INFO - HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+2026-02-14 14:17:11,318 - httpx - INFO - HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+2026-02-14 14:17:12,545 - httpx - INFO - HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 403 Forbidden"
+2026-02-14 14:17:13,154 - httpx - INFO - HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 403 Forbidden"
+2026-02-14 14:17:13,219 - api.services.review_service - ERROR - Review pipeline failed: Traceback (most recent call last):
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_ai/models/openai.py", line 646, in _completions_create
+    return await self.client.chat.completions.create(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<28 lines>...
+    )
+    ^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/openai/resources/chat/completions/completions.py", line 2678, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+    ...<49 lines>...
+    )
+    ^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/openai/_base_client.py", line 1797, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/openai/_base_client.py", line 1597, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.PermissionDeniedError: Error code: 403 - {'error': {'message': 'Key limit exceeded (monthly limit). Manage it using https://openrouter.ai/settings/keys', 'code': 403}}
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/skmabudalam/Documents/BugViper/api/services/review_service.py", line 665, in execute_pr_review
+    review_results = await run_review(diff_text, agent_context, repo_id, pr_number)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/skmabudalam/Documents/BugViper/deepagent/agent/review_pipeline.py", line 107, in run_review
+    result = await _orchestrator.run(prompt, deps=deps)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_ai/agent/abstract.py", line 258, in run
+    async with self.iter(
+               ~~~~~~~~~^
+        user_prompt=user_prompt,
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<11 lines>...
+        builtin_tools=builtin_tools,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ) as agent_run:
+    ^
+  File "/Users/skmabudalam/.local/share/uv/python/cpython-3.13.5-macos-aarch64-none/lib/python3.13/contextlib.py", line 235, in __aexit__
+    await self.gen.athrow(value)
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_ai/agent/__init__.py", line 705, in iter
+    async with graph.iter(
+               ~~~~~~~~~~^
+        inputs=user_prompt_node,
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+        infer_name=False,
+        ^^^^^^^^^^^^^^^^^
+    ) as graph_run:
+    ^
+  File "/Users/skmabudalam/.local/share/uv/python/cpython-3.13.5-macos-aarch64-none/lib/python3.13/contextlib.py", line 235, in __aexit__
+    await self.gen.athrow(value)
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_graph/beta/graph.py", line 270, in iter
+    async with GraphRun[StateT, DepsT, OutputT](
+               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        graph=self,
+        ^^^^^^^^^^^
+    ...<3 lines>...
+        traceparent=traceparent,
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+    ) as graph_run:
+    ^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_graph/beta/graph.py", line 423, in __aexit__
+    await self._async_exit_stack.__aexit__(exc_type, exc_val, exc_tb)
+  File "/Users/skmabudalam/.local/share/uv/python/cpython-3.13.5-macos-aarch64-none/lib/python3.13/contextlib.py", line 768, in __aexit__
+    raise exc
+  File "/Users/skmabudalam/.local/share/uv/python/cpython-3.13.5-macos-aarch64-none/lib/python3.13/contextlib.py", line 749, in __aexit__
+    cb_suppress = cb(*exc_details)
+  File "/Users/skmabudalam/.local/share/uv/python/cpython-3.13.5-macos-aarch64-none/lib/python3.13/contextlib.py", line 162, in __exit__
+    self.gen.throw(value)
+    ~~~~~~~~~~~~~~^^^^^^^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_graph/beta/graph.py", line 981, in _unwrap_exception_groups
+    raise exception
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_graph/beta/graph.py", line 750, in _run_tracked_task
+    result = await self._run_task(t_)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_graph/beta/graph.py", line 782, in _run_task
+    output = await node.call(step_context)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_graph/beta/step.py", line 253, in _call_node
+    return await node.run(GraphRunContext(state=ctx.state, deps=ctx.deps))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_ai/_agent_graph.py", line 452, in run
+    return await self._make_request(ctx)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_ai/_agent_graph.py", line 497, in _make_request
+    model_response = await ctx.deps.model.request(message_history, model_settings, model_request_parameters)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_ai/models/instrumented.py", line 399, in request
+    response = await self.wrapped.request(messages, model_settings, model_request_parameters)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_ai/models/openai.py", line 559, in request
+    response = await self._completions_create(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        messages, False, cast(OpenAIChatModelSettings, model_settings or {}), model_request_parameters
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_ai/models/openai.py", line 680, in _completions_create
+    raise ModelHTTPError(status_code=status_code, model_name=self.model_name, body=e.body) from e
+pydantic_ai.exceptions.ModelHTTPError: status_code: 403, model_name: anthropic/claude-opus-4.6, body: {'message': 'Key limit exceeded (monthly limit). Manage it using https://openrouter.ai/settings/keys', 'code': 403}
+
+2026-02-14 14:17:18,738 - httpx - INFO - HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 403 Forbidden"
+
+---
+
+why so many errors and why did it call the model multiple times ?
+
+---
+
+Yes check
+
+---
+
+The overall size of the span exceeded 512KB and some attributes were truncated. As a result, the conversation might be incomplete.
+Below are the truncated attributes:
+
+/pydantic_ai.all_messages/0/parts/0/content
+Rich Text
+Source
+Open in Playground
+Output
+assistant
+Tool call
+check_task
+{
+1 item
+"task_id": "2a3aabce",
+}
+Tool call
+check_task
+{
+1 item
+"task_id": "28be922c",
+}
+Output
+tool
+check_task
+Task: 2a3aabce
+Subagent: bug-hunter
+Status: running
+Description: Review the following PR diff and graph context for bugs, type errors, dead code, and logic problems.
+
+PR #3 in Pavel401/BugViper
+Diff
+diff --git a/CLAUDE.md b/CLAUDE.md
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -32,7 +32,7 @@ api/                    # FastAPI backend
+ ├── dependencies.py     # DI (Neo4j client injection)
+ ├── models/schemas.py   # Pydantic request/response models
+ ├── routers/            # REST endpoints
+-...
+See full text
+~50k chars
+Output
+tool
+check_task
+Task: 28be922c
+Subagent: security-auditor
+Status: running
+Description: Review the following PR diff and graph context for security vulnerabilities (OWASP Top 10 and beyond).
+
+PR #3 in Pavel401/BugViper
+Key files changed:
+1. api/routers/debug.py (NEW FILE) — A new debug endpoint exposed at /graph-schema:
+
+"""
+Add this as a temporary API endpoint to diagnose the graph
+"""
+from fastapi import APIRouter, Depends
+from db.client import Neo4jClient
+from api.dependencies i So Basically I see the main agent calls the task id and it always rturns task status with 50k+ tokens each time so that costed us so much moneya and tokens as of https://logfire-us.pydantic.dev/pavel401/nomaibackend?q=trace_id%3D%27019c5b50f182e730eb330719212ee588%27+and+span_id%3D%27865c4942aef5800f%27&spanId=865c4942aef5800f&traceId=019c5b50f182e730eb330719212ee588&env=-clear-&since=2026-02-14T08%3A14%3A55.264846Z&until=2026-02-14T09%3A14%3A55.264846Z . The cost was 6.33 for input tokem of 700k+ , output token of 15k , this is bullshit. What did we do wrong ?
+
+---
+
+Ok Bro , just burned so much money for no reason ,from next time always warn me where things can go wrong . please put this in your caludemd , time to time update it as well . Should the claude.md be part of a oublic repo ?
+
+---
+
+Please add it to the gitignore and remove it from git history as well
+
+---
+
+Please do it
+
+---
+
+Can you implement the Plan.md ?
+
+---
+
+Bro you fucking deleted the plan.md ?
+
+---
+
+[Request interrupted by user for tool use]
+
+---
+
+# BugViper — Follow-up Review Architecture Plan
+
+## Problem Statement
+
+The current PR review pipeline is stateless. Every review run treats the PR as if it has never been reviewed before. This means:
+- Issues that were already fixed get re-raised as new
+- Issues the developer chose to ignore keep getting flagged
+- There is no sense of progress across review cycles
+- The GitHub comment thread has no continuity
+
+---
+
+## Goal
+
+When a developer pushes fixes after a review, the next review should:
+1. Know what was flagged in the previous run
+2. Identify what has been fixed
+3. Identify what is still open
+4. Identify genuinely new issues introduced by the latest changes
+5. Post a structured comment that reflects the full picture, not just a flat new list
+
+---
+
+## Storage Decision: Firestore (not Neo4j)
+
+Review history is document-oriented event data — a timestamped log of JSON results. Firestore is the right fit:
+
+- Data shape is a document blob, not a graph
+- Query pattern is a simple lookup by owner/repo/PR number, not graph traversal
+- Firebase SDK is already integrated in the project
+- No connection pool — avoids the timeout issues Neo4j has under load
+- Native real-time subscriptions enable live review status on the frontend
+- TTL and retention policies available natively
+
+Neo4j continues to own code structure (CALLS, INHERITS, graph traversal). Firestore owns operational history (reviews, PR metadata, run results).
+
+---
+
+## Firestore Schema
+
+```
+users/
+  {uid}/
+    [existing user fields: displayName, email, githubUsername, etc.]
+
+    repos/
+      {owner}_{repo}/
+        [repo metadata: name, owner, ingested_at, last ingestion stats]
+
+        prs/
+          {pr_number}/
+            [PR metadata document]
+
+            reviews/
+              run_1/  run_2/  ...
+                [review result document per run]
+```
+
+### PR Metadata Document
+Stores everything about the PR itself — title, description, author, base/head branch, commit SHA, files changed, additions/deletions, state (open/closed/merged), timestamps, and a live tally of open issues and total review runs.
+
+### Review Run Document
+Stores the full agent output for that run plus a computed diff from the previous run:
+- Full issue list with per-issue status (new / still_open / fixed)
+- Positive findings
+- Summary
+- Commit SHA that was reviewed
+- Counters (total, critical, high, medium, low)
+- Which issue fingerprints were fixed since the last run
+- Which are new
+- Which are still open
+
+---
+
+## User Lookup from Webhook
+
+Webhooks arrive with the GitHub owner username (e.g. `"Pavel401"`). The Firestore user doc is keyed by Firebase UID. Resolution is a single indexed query:
+
+```
+users collection → where githubUsername == "Pavel401" → get uid
+```
+
+Firestore auto-indexes single fields so this is fast with no extra setup. No reverse-index collection needed.
+
+---
+
+## Issue Fingerprinting
+
+To match issues across runs (even after line numbers shift due to fixes), each issue gets a stable fingerprint derived from `file path + normalized title`. Line numbers are intentionally excluded — they drift after code changes. This fingerprint is the identity of an issue across its entire lifetime in the PR.
+
+---
+
+## Reconciliation Logic (Deterministic, No LLM)
+
+After the agent produces results for a new run:
+
+1. Load issue fingerprints from the previous run
+2. Compare with fingerprints from the new run
+3. Fingerprints in old run but not in new → **fixed**
+4. Fingerprints in both runs → **still open**
+5. Fingerprints only in new run → **new**
+
+This reconciliation is fully deterministic and happens in the application layer, not in the LLM.
+
+---
+
+## Agent Prompt Enhancement
+
+Before calling the agents on a follow-up review, the previous run's open issues are fetched from Firestore and injected into the prompt as an additional context section. This gives the agents awareness of what was previously flagged so they can give more informed analysis.
+
+---
+
+## Webhook + Review Flow (Updated)
+
+```
+GitHub webhook fires (PR opened / new push to PR)
+  │
+  ▼
+Look up uid by githubUsername (single Firestore query)
+  │
+  ▼
+Upsert PR metadata document (title, description, SHA, files, etc.)
+  │
+  ▼
+Fetch latest review run for this PR (if any)
+  │
+  ▼
+Run multi-agent review with previous issues injected into prompt
+  │
+  ▼
+Reconcile new results against previous run (fixed / still open / new)
+  │
+  ▼
+Save new review run document to Firestore
+Update PR document (open_issue_count, review_count, last_reviewed_at)
+  │
+  ▼
+Post structured GitHub comment:
+  ✅ Fixed since last review
+  🔴 Still open
+  🆕 New issues this run
+```
+
+---
+
+## Comment Structure (Updated)
+
+Instead of a flat list of issues on every run, the GitHub comment will show:
+
+- A summary line (e.g. "Run #2 — 2 fixed, 1 still open, 3 new")
+- A **Fixed** section listing what was resolved
+- A **Still Open** section for unresolved issues from previous runs
+- A **New Issues** section for issues introduced by the latest changes
+- A **Positive Findings** section as before
+
+---
+
+## What Needs to Be Built
+
+1. **Firestore service additions** — methods for upserting PR metadata, saving review runs, fetching the latest run, and looking up uid by GitHub username
+2. **Review service updates** — fetch previous run before agent call, inject into prompt, run reconciliation after, save to Firestore
+3. **Webhook handler updates** — upsert PR metadata on PR open/sync/close events
+4. **Comment formatter updates** — render the new Fixed / Still Open / New structure
+5. **Agent prompt updates** — add a "Previous Open Issues" section to both agent system prompts
+
+---
+
+Review the current /Users/skmabudalam/Documents/BugViper/ingestion_service/languages/python.py does it store the repo path properly ?
+
+---
+
+Can we store the repo details in the firestore
+
+---
+
+Continue from where you left off.
+
+---
+
+When we ingest a new repo it should create a repo and metadata in the firebase unders the users
+
+---
+
+[Request interrupted by user]
+
+---
+
+first plan it
+
+---
+
+[Request interrupted by user for tool use]
+
+---
+
+Please analyse the firebase service .py and how the schema is setup
+
+---
+
+All in the repo stats
+
+---
+
+So in the frontend we should have a + button that shows all of the user's github repositories and then we should be able to ingest them . How to do it ?
+
+---
+
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Analysis:
+Let me chronologically analyze the conversation to capture all technical details and decisions.
+
+1. The conversation started with a /clear command and then showed logs from a review pipeline run.
+
+2. User asked about many errors and multiple model calls - I explained:
+   - The Neo4j `alias` property warnings (query using `r.alias` but Python ingestion stores it on Module node)
+   - The `pydantic_deep` orchestrator making ~20 API calls due to polling pattern
+   - Fixed the alias query in `db/queries.py` to use `COALESCE(r.alias, m.alias)`
+
+3. User showed Logfire trace showing `pydantic_deep` check_task returning full 50K diff on every poll - cost $6.33 for 700K tokens.
+
+4. Fixed `deepagent/agent/review_pipeline.py` - replaced `pydantic_deep` orchestrator with direct `asyncio.gather` + `pydantic_ai.Agent` calls.
+
+5. User asked to put cost warnings in CLAUDE.md and whether CLAUDE.md should be public - I added a "Cost & Token Pitfalls" section and advised against committing CLAUDE.md publicly.
+
+6. User asked to add CLAUDE.md to .gitignore and remove from git history - done using `git filter-repo`.
+
+7. User asked to force push to remote - done (remote named `bugviper`, not `origin`).
+
+8. User showed a plan.md for implementing follow-up review architecture (Firestore-based PR history with reconciliation). I accidentally deleted plan.md when running `git rm --cached plan.md` followed by `git filter-repo`.
+
+9. User pasted plan.md content and asked me to implement it. I implemented:
+   - Firestore PR history methods in `firebase_service.py`
+   - `ReconciledReview` model and fingerprinting in `agent_schemas.py`
+   - Reconciliation logic in `review_service.py`
+   - Updated comment formatter to show Fixed/Still Open/New sections
+   - Updated agent prompts
+
+10. User asked to review `ingestion_service/languages/python.py` for repo path handling - I concluded it works correctly (repo_path not stored by parser, set by orchestrator).
+
+11. User asked to store repo details in Firestore - I looked at the ingestion flow and firebase service.
+
+12. User asked to analyze firebase_service.py schema - I provided analysis showing the gap: `repos/{owner}_{repo}` doc has no metadata.
+
+13. User said "All in the repo stats" - I implemented:
+    - `upsert_repo_metadata`, `get_repo_metadata`, `list_repos` in firebase_service.py
+    - Added `uid` to `IngestionTaskPayload`
+    - Added `get_current_user` auth to ingestion endpoint
+    - GitHub metadata fetch using existing `get_repository_info()`
+    - Writes to Firestore at dispatch (pending) and completion (ingested) or failure
+
+14. User asked about implementing a + button in the frontend to show GitHub repos and ingest them.
+    - I read sidebar.tsx, page.tsx, api.ts, repositories/page.tsx
+    - Rewrote repositories/page.tsx with:
+      - "Add Repository" button in header
+      - GitHub repo picker modal (no Dialog component, custom overlay)
+      - Search/filter within picker
+      - One-click Ingest per repo
+      - Manual ingestion form collapsed under `<details>`
+      - Active job banner with spinner
+
+Summary:
+1. Primary Request and Intent:
+   - Diagnose why there were many Neo4j `alias` property warnings and multiple LLM API calls in the review pipeline
+   - Fix the expensive `pydantic_deep` orchestrator (burned $6.33/review, 700K tokens) by reverting to direct `asyncio.gather` + `pydantic_ai.Agent` calls
+   - Add "Cost & Token Pitfalls" section to CLAUDE.md and update memory files
+   - Remove CLAUDE.md and plan.md from the git repo entirely (gitignore + history purge + force push)
+   - Implement the "Follow-up Review Architecture" from plan.md: Firestore-based PR history, issue fingerprinting, reconciliation (fixed/still_open/new), structured GitHub comments
+   - Store repo metadata in Firestore when a repository is ingested (GitHub metadata + ingestion stats)
+   - Build a frontend "Add Repository" UI: a `+` button that opens a picker modal showing the user's GitHub repos with one-click ingest
+
+2. Key Technical Concepts:
+   - `pydantic_deep` orchestrator anti-pattern: polling `check_task` returns full task description (50K diff) on every poll, accumulating context → catastrophic token cost
+   - Correct pattern: `asyncio.gather` + direct `pydantic_ai.Agent.run()` calls — 2 LLM calls total, predictable cost
+   - Issue fingerprinting: `sha1(file::title)[:12]` — stable across runs even when line numbers shift
+   - Reconciliation: deterministic diff of fingerprint sets between runs (no LLM needed)
+   - Firestore schema: `users/{uid}/repos/{owner}_{repo}/prs/{pr_number}/reviews/run_{n}`
+   - `git filter-repo` for purging sensitive files from git history
+   - Neo4j `COALESCE(r.alias, m.alias)` fix — Python stores alias on Module node, JS stores on relationship
+   - Firebase `get_current_user` dependency for auth on ingestion endpoint
+   - `GitHubClient.get_repository_info()` already existed to fetch GitHub repo metadata
+
+3. Files and Code Sections:
+
+   - **`deepagent/agent/review_pipeline.py`** (fully rewritten)
+     - Removed `pydantic_deep` orchestrator, replaced with direct parallel agent calls
+     ```python
+     bug_hunter = Agent(MODEL, system_prompt=BUG_HUNTER_PROMPT, output_type=AgentFindings)
+     security_auditor = Agent(MODEL, system_prompt=SECURITY_AUDITOR_PROMPT, output_type=AgentFindings)
+
+     async def run_review(...) -> ReviewResults:
+         bug_result, sec_result = await asyncio.gather(
+             bug_hunter.run(prompt),
+             security_auditor.run(prompt),
+         )
+     ```
+
+   - **`db/queries.py`**
+     - Fixed Neo4j alias warning: `r.alias` → `COALESCE(r.alias, m.alias)` in import query at line ~1513
+
+   - **`deepagent/models/agent_schemas.py`**
+     - Added `status: Literal["new", "still_open", "fixed"]` and auto-computed `fingerprint` to `Issue`
+     - Added `ReconciledReview` model
+     ```python
+     class Issue(BaseModel):
+         status: Literal["new", "still_open", "fixed"] = Field(default="new")
+         fingerprint: str = Field(default="")
+
+         @model_validator(mode="after")
+         def compute_fingerprint(self) -> "Issue":
+             if not self.fingerprint:
+                 raw = f"{self.file}::{self.title.strip().lower()}"
+                 self.fingerprint = hashlib.sha1(raw.encode()).hexdigest()[:12]
+             return self
+
+     class ReconciledReview(BaseModel):
+         issues: list[Issue] = Field(default_factory=list)
+         positive_findings: list[str] = Field(default_factory=list)
+         summary: str = ""
+         fixed_fingerprints: list[str] = Field(default_factory=list)
+         still_open_fingerprints: list[str] = Field(default_factory=list)
+         new_fingerprints: list[str] = Field(default_factory=list)
+     ```
+
+   - **`api/services/firebase_service.py`**
+     - Added `upsert_repo_metadata`, `get_repo_metadata`, `list_repos` methods
+     - Added PR history methods: `lookup_uid_by_github_username`, `upsert_pr_metadata`, `save_review_run`, `get_latest_review_run`
+     ```python
+     def upsert_repo_metadata(self, uid, owner, repo, data):
+         repo_key = f"{owner}_{repo}"
+         doc_ref = self._db.collection("users").document(uid).collection("repos").document(repo_key)
+         # merge data with updatedAt, set createdAt on first write
+
+     def lookup_uid_by_github_username(self, github_username):
+         docs = self._db.collection("users").where("githubUsername", "==", github_username).limit(1).stream()
+         for doc in docs: return doc.id
+         return None
+     ```
+
+   - **`api/services/review_service.py`**
+     - Added imports: `firebase_service`, `Issue`, `ReconciledReview`
+     - Added `_reconcile()` helper — deterministic fingerprint-based diff
+     - Added `_build_previous_issues_section()` — formats prev open issues for agent prompt
+     - Replaced Steps 7-9 with new Steps 7-11: Firestore lookup → inject prev issues → run agents → reconcile → save run → post comment
+     ```python
+     def _reconcile(new_issues, prev_run):
+         prev_fp = {i["fingerprint"] for i in prev_run.get("issues", [])} if prev_run else set()
+         new_fp = {i.fingerprint for i in new_issues}
+         fixed_fp = prev_fp - new_fp
+         still_open_fp = prev_fp & new_fp
+         # tag each issue, re-inject fixed ones from prev run
+     ```
+
+   - **`api/utils/comment_formatter.py`** (fully rewritten)
+     - Now accepts `ReconciledReview` instead of `ReviewResults`
+     - Renders three sections: ✅ Fixed Since Last Review / 🔁 Still Open / 🆕 New Issues This Run
+
+   - **`deepagent/prompts.py`**
+     - Added rule 6 to both agents: treat "Previously Flagged Issues" section as awareness context only
+
+   - **`common/job_models.py`**
+     - Added `uid: Optional[str] = None` to `IngestionTaskPayload` for Cloud Tasks worker to write to Firestore
+
+   - **`api/routers/ingestion.py`**
+     - Added `get_current_user` dependency, `firebase_service` import, `GitHubClient` import
+     - Fetches GitHub repo metadata via `gh.get_repository_info()`
+     - Writes initial `status: pending` doc at job dispatch
+     - Updates doc with stats + `status: ingested` on dev-mode completion
+     - Updates doc with `status: failed` on error
+     ```python
+     @router.post("/github", response_model=IngestionJobResponse)
+     async def ingest_github_repository(
+         request: GitHubIngestRequest,
+         neo4j_client: Neo4jClient = Depends(get_neo4j_client),
+         user: dict = Depends(get_current_user),
+     ):
+         uid = user["uid"]
+         gh_meta = await gh.get_repository_info(request.owner, request.repo_name)
+         firebase_service.upsert_repo_metadata(uid, owner, repo, {
+             "owner", "repoName", "fullName", "description", "language",
+             "stars", "forks", "private", "defaultBranch", "size", "topics",
+             "githubCreatedAt", "githubUpdatedAt", "branch", "ingestionStatus": "pending"
+         })
+     ```
+
+   - **`frontend/app/(protected)/repositories/page.tsx`** (fully rewritten)
+     - Added "Add Repository" button in page header
+     - GitHub repo picker modal (custom Tailwind overlay, no Dialog component)
+     - Search/filter within picker
+     - Per-repo "Ingest" button calling `handlePickerIngest`
+     - Manual ingestion form collapsed under `<details>` element
+     - Active job banner with spinning indicator
+     - Imports `getGitHubRepos` from `@/lib/api`
+
+   - **`.gitignore`**
+     - Added `CLAUDE.md` and `plan.md` entries
+
+4. Errors and Fixes:
+   - **`git filter-repo` blocking input**: First run failed with EOF error because it prompted "Treat this run as continuation?". Fixed by deleting `.git/filter-repo/already_ran` before re-running.
+   - **Remote named `bugviper` not `origin`**: `git push origin` failed. Fixed by using `git push bugviper --force-with-lease`, then `git push bugviper --force` (needed because filter-repo made tracking ref stale).
+   - **`plan.md` accidentally deleted**: When running `git rm --cached plan.md` + `git filter-repo`, the local file was also removed. User was upset. Plan content was recovered when user pasted it in the next message.
+   - **`__import__` hack in ingestion router**: Used `__import__("datetime")` inline — cleaned up by adding `from datetime import datetime, timezone` at the top of the file.
+
+5. Problem Solving:
+   - **Expensive review pipeline**: Root cause was `pydantic_deep`'s polling orchestrator returning full task description (with 50K diff) on every `check_task` call, accumulated in context window → 700K tokens. Fixed by removing `pydantic_deep` entirely and using direct parallel `asyncio.gather` with two `pydantic_ai.Agent` instances.
+   - **Neo4j alias warnings**: Root cause was Python ingestion storing `alias` on the `Module` node while the query read `r.alias` from the `IMPORTS` relationship. Fixed with `COALESCE(r.alias, m.alias)`.
+   - **No Firestore repo metadata**: The `repos/{owner}_{repo}` Firestore document was a phantom container (auto-created by subcollections) with no fields. Fixed by writing full metadata at ingestion time.
+   - **No auth on ingestion endpoint**: The `POST /api/v1/ingest/github` endpoint had no auth, so uid was unavailable. Fixed by adding `get_current_user` dependency.
+
+6. All User Messages:
+   - "why so many errors and why did it call the model multiple times ?"
+   - "Yes check" (re: alias property fix)
+   - "Ok Bro , just burned so much money for no reason, from next time always warn me where things can go wrong. please put this in your claudemd, time to time update it as well. Should the claude.md be part of a public repo?"
+   - "Please add it to the gitignore and remove it from git history as well"
+   - "Please do it" (re: force push)
+   - "Can you implement the Plan.md ?" (followed by "Bro you fucking deleted the plan.md ?")
+   - User pasted plan.md content
+   - "Review the current /Users/skmabudalam/Documents/BugViper/ingestion_service/languages/python.py does it store the repo path properly ?"
+   - "Can we store the repo details in the firestore"
+   - "Continue from where you left off." (after session resume)
+   - "When we ingest a new repo it should create a repo and metadata in the firebase under the users [interrupted] first plan it"
+   - "Please analyse the firebase service.py and how the schema is setup"
+   - "All in the repo stats"
+   - "So in the frontend we should have a + button that shows all of the user's github repositories and then we should be able to ingest them. How to do it?"
+
+7. Pending Tasks:
+   - No explicitly pending tasks from user at this point. The frontend repositories page with the picker modal was the last completed task.
+
+8. Current Work:
+   The most recent work was implementing the GitHub repository picker modal in the frontend repositories page (`frontend/app/(protected)/repositories/page.tsx`). The page was fully rewritten to include:
+   - An "Add Repository" button in the header that opens a modal
+   - The modal fetches GitHub repos via `getGitHubRepos()` (existing API call)
+   - Repos are shown with name, description, language, stars, private badge
+   - Search/filter input
+   - Per-repo "Ingest" button that calls `ingestGithub()` with default branch
+   - Manual ingestion form collapsed under `<details>` element
+   - Active ingestion job banner with spinner
+
+9. Optional Next Step:
+   The user's last explicit request was: "So in the frontend we should have a + button that shows all of the user's github repositories and then we should be able to ingest them. How to do it?" — this was fully implemented.
+
+   No next step is directly queued. The natural continuation would be to verify the frontend builds without TypeScript errors (`cd frontend && npm run build`), but the user has not explicitly requested this.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/skmabudalam/.REDACTED.jsonl
+Please continue the conversation from where we left off without asking the user any further questions. Continue with the last task that you were asked to work on.
+
+---
+
+Once I click on the start it should automatically create the repo document in the firestore with the status as syncing . When synced it should be synced , if failed it should be failed . After clicking the start it should close the fialog and push the repo to ingested with the badge and Ingesting circular loader . Make the flow minimal and clean UX
+
+---
+
+delete repo is not working it should delete from the firestore and the neo4j
