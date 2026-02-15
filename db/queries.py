@@ -41,7 +41,7 @@ class CodeQueryService:
         query = """
         MATCH (r:Repository)
         OPTIONAL MATCH (r)-[:CONTAINS*]->(f:File)
-        RETURN r.id as id, r.name as name, r.owner as owner, 
+        RETURN COALESCE(r.id, r.repo) as id, r.name as name, r.owner as owner,
                r.url as url, r.path as local_path,
                r.last_commit_hash as last_commit,
                r.created_at as created_at,

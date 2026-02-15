@@ -9,7 +9,8 @@ import os
 from db.client import Neo4jClient
 from db.queries import CodeQueryService
 from db.schema import CodeGraphSchema
-from api.dependencies import get_neo4j_client
+from api.dependencies import get_neo4j_client, get_current_user
+from api.services.firebase_service import firebase_service
 
 router = APIRouter()
 
@@ -134,26 +135,26 @@ async def get_repository_by_id(
 async def delete_repository_by_name(
     username: str = Path(..., description="Repository owner/username"),
     repo_name: str = Path(..., description="Repository name"),
-    query_service: CodeQueryService = Depends(get_query_service)
+    query_service: CodeQueryService = Depends(get_query_service),
+    user: dict = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """
-    Delete a repository by username and repo name.
+    Delete a repository by username and repo name from Neo4j and Firestore.
     """
     repo_id = f"{username}/{repo_name}"
     try:
-        overview = query_service.get_repo_overview(repo_id)
-        if not overview:
-            raise HTTPException(status_code=404, detail="Repository not found")
-
         deleted = query_service.delete_repository(repo_id)
 
+        # Always clean up Firestore regardless of whether Neo4j had the repo
+        try:
+            firebase_service.delete_repo_metadata(user["uid"], username, repo_name)
+        except Exception:
+            pass  # Firestore doc may not exist; non-fatal
+
         if deleted:
-            return {
-                "message": f"Repository {repo_id} deleted successfully",
-                "deleted_repository_id": repo_id
-            }
-        else:
-            raise HTTPException(status_code=500, detail="Failed to delete repository")
+            return {"message": f"Repository {repo_id} deleted successfully", "deleted_repository_id": repo_id}
+
+        raise HTTPException(status_code=404, detail="Repository not found in graph database")
 
     except HTTPException:
         raise
@@ -163,26 +164,28 @@ async def delete_repository_by_name(
 
 @router.delete("/{repo_id}")
 async def delete_repository(
-    repo_id: str = Path(..., description="Repository ID to delete"),
-    query_service: CodeQueryService = Depends(get_query_service)
+    repo_id: str = Path(..., description="Repository ID to delete (owner/repo format)"),
+    query_service: CodeQueryService = Depends(get_query_service),
+    user: dict = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """
-    Delete a repository and all its associated data.
+    Delete a repository and all its associated data from Neo4j and Firestore.
     """
     try:
-        overview = query_service.get_repo_overview(repo_id)
-        if not overview:
-            raise HTTPException(status_code=404, detail="Repository not found")
-
         deleted = query_service.delete_repository(repo_id)
 
+        # Parse owner/repo from repo_id and clean up Firestore
+        if "/" in repo_id:
+            owner, repo_name = repo_id.split("/", 1)
+            try:
+                firebase_service.delete_repo_metadata(user["uid"], owner, repo_name)
+            except Exception:
+                pass  # Non-fatal
+
         if deleted:
-            return {
-                "message": f"Repository {repo_id} deleted successfully",
-                "deleted_repository_id": repo_id
-            }
-        else:
-            raise HTTPException(status_code=500, detail="Failed to delete repository")
+            return {"message": f"Repository {repo_id} deleted successfully", "deleted_repository_id": repo_id}
+
+        raise HTTPException(status_code=404, detail="Repository not found in graph database")
 
     except HTTPException:
         raise

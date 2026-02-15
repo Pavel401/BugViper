@@ -321,11 +321,11 @@ CYPHER_QUERIES = {
     # -------------------------------------------------------------------------
     "get_graph_stats": """
         MATCH (r:Repository)
-        OPTIONAL MATCH (f:File)
-        OPTIONAL MATCH (c:Class)
-        OPTIONAL MATCH (fn:Function)
-        OPTIONAL MATCH (v:Variable)
-        OPTIONAL MATCH (m:Module)
+        OPTIONAL MATCH (r)-[:CONTAINS*]->(f:File)
+        OPTIONAL MATCH (f)-[:CONTAINS]->(c:Class)
+        OPTIONAL MATCH (f)-[:CONTAINS]->(fn:Function)
+        OPTIONAL MATCH (f)-[:CONTAINS]->(v:Variable)
+        OPTIONAL MATCH (f)-[:IMPORTS]->(m:Module)
         RETURN
             count(DISTINCT r) as repositories,
             count(DISTINCT f) as files,
@@ -339,19 +339,19 @@ CYPHER_QUERIES = {
         MATCH (r:Repository)
         WHERE r.repo = $repo_id OR r.id = $repo_id
         OPTIONAL MATCH (r)-[:CONTAINS*]->(f:File)
+        WITH r, collect(DISTINCT f) as files
+        UNWIND CASE WHEN size(files) = 0 THEN [null] ELSE files END AS f
         OPTIONAL MATCH (f)-[:CONTAINS]->(c:Class)
         OPTIONAL MATCH (f)-[:CONTAINS]->(fn:Function)
-        OPTIONAL MATCH (f)-[:CONTAINS]->(v:Variable)
         OPTIONAL MATCH (f)-[:IMPORTS]->(m:Module)
-        WITH r, f, c, fn, v, m
         RETURN
             count(DISTINCT f) as file_count,
             count(DISTINCT c) as class_count,
             count(DISTINCT fn) as function_count,
             0 as method_count,
-            sum(COALESCE(f.lines_count, 0)) as line_count,
+            sum(DISTINCT COALESCE(f.lines_count, 0)) as line_count,
             count(DISTINCT m) as import_count,
-            collect(DISTINCT f.language) as languages
+            [lang IN collect(DISTINCT f.language) WHERE lang IS NOT NULL AND lang <> 'unknown'] as languages
     """,
 
     # -------------------------------------------------------------------------
@@ -461,15 +461,14 @@ CYPHER_QUERIES = {
         MERGE (f:File {repo_id: $repo_id, path: $path})
         ON CREATE SET
             f.id = $file_id,
-            f.name = $name,
+            f.extension = $extension
+        SET f.name = $name,
             f.language = $language,
-            f.extension = $extension,
             f.lines_count = $lines_count,
             f.sha = $sha,
             f.size = $size,
-            f.source_code = $source_code
-        SET f.last_updated = datetime(),
-            f.source_code = $source_code
+            f.source_code = $source_code,
+            f.last_updated = datetime()
         WITH r, f
         OPTIONAL MATCH (m:Module {repo_id: $repo_id, path: $module_path})
         FOREACH (_ IN CASE WHEN m IS NOT NULL THEN [1] ELSE [] END |

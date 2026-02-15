@@ -21,6 +21,7 @@ from typing import Dict, List, Set, Tuple
 from api.utils.comment_formatter import format_github_comment
 from api.utils.graph_context import build_graph_context_section
 from api.services.firebase_service import firebase_service
+from common.firebase_models import PRMetadata, ReviewRunData
 from db.client import Neo4jClient
 from db.queries import CodeQueryService
 from deepagent.models.agent_schemas import ContextData, Issue, ReconciledReview
@@ -733,12 +734,13 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int) -> None:
         uid = firebase_service.lookup_uid_by_github_username(owner)
         prev_run: dict | None = None
         if uid:
-            firebase_service.upsert_pr_metadata(uid, owner, repo, pr_number, {
-                "owner": owner,
-                "repo": repo,
-                "prNumber": pr_number,
-                "repoId": repo_id,
-            })
+            firebase_service.upsert_pr_metadata(
+                uid,
+                owner,
+                repo,
+                pr_number,
+                PRMetadata(owner=owner, repo=repo, pr_number=pr_number, repo_id=repo_id),
+            )
             prev_run = firebase_service.get_latest_review_run(uid, owner, repo, pr_number)
             if prev_run:
                 logger.info(f"Loaded previous run #{prev_run.get('runNumber')} for {repo_id}#{pr_number}")
@@ -761,16 +763,16 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int) -> None:
 
         # ── Step 10: Save run to Firestore ───────────────────────────────
         if uid:
-            run_doc = {
-                "issues": [i.model_dump() for i in reconciled.issues],
-                "positive_findings": reconciled.positive_findings,
-                "summary": reconciled.summary,
-                "fixed_fingerprints": reconciled.fixed_fingerprints,
-                "still_open_fingerprints": reconciled.still_open_fingerprints,
-                "new_fingerprints": reconciled.new_fingerprints,
-                "repoId": repo_id,
-                "prNumber": pr_number,
-            }
+            run_doc = ReviewRunData(
+                issues=[i.model_dump() for i in reconciled.issues],
+                positive_findings=reconciled.positive_findings,
+                summary=reconciled.summary,
+                fixed_fingerprints=reconciled.fixed_fingerprints,
+                still_open_fingerprints=reconciled.still_open_fingerprints,
+                new_fingerprints=reconciled.new_fingerprints,
+                repo_id=repo_id,
+                pr_number=pr_number,
+            )
             firebase_service.save_review_run(uid, owner, repo, pr_number, run_doc)
 
         # ── Step 11: Format and post comment ─────────────────────────────

@@ -2,9 +2,19 @@
 
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
+
+from pydantic import BaseModel
 
 from common.firebase_init import _initialize_firebase
+from common.firebase_models import FirebaseUserData, FirebaseUserProfile
+
+
+def _to_dict(data: BaseModel | dict[str, Any]) -> dict[str, Any]:
+    """Serialize a Pydantic model (or plain dict) to a Firestore-ready dict."""
+    if isinstance(data, BaseModel):
+        return data.model_dump(by_alias=True, exclude_none=True)
+    return data
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +50,7 @@ class BugViperFirebaseService:
         github_access_token: str,
         github_profile: dict,
         firebase_claims: dict,
-    ) -> dict:
+    ) -> FirebaseUserProfile:
         """
         Create or update a user document in Firestore.
 
@@ -50,7 +60,7 @@ class BugViperFirebaseService:
             github_profile: Dict from GitHub /user API (may be empty on failure).
             firebase_claims: Decoded Firebase ID token claims (fallback values).
 
-        Returns the user profile dict.
+        Returns the public user profile (no access token).
         """
         now = datetime.now(timezone.utc).isoformat()
 
@@ -62,39 +72,39 @@ class BugViperFirebaseService:
         doc_ref = self._db.collection("users").document(uid)
         doc = doc_ref.get()
 
-        user_data = {
-            "uid": uid,
-            "email": email,
-            "displayName": display_name,
-            "githubUsername": github_username,
-            "githubAccessToken": github_access_token,
-            "photoURL": photo_url,
-            "lastLogin": now,
-        }
+        user_doc = FirebaseUserData(
+            uid=uid,
+            email=email,
+            display_name=display_name,
+            github_username=github_username,
+            github_access_token=github_access_token,
+            photo_url=photo_url,
+            last_login=now,
+        )
 
         if doc.exists:
-            doc_ref.update(user_data)
+            doc_ref.update(_to_dict(user_doc))
             created_at = doc.to_dict().get("createdAt")
         else:
-            user_data["createdAt"] = now
-            doc_ref.set(user_data)
+            full_doc = {**_to_dict(user_doc), "createdAt": now}
+            doc_ref.set(full_doc)
             created_at = now
 
-        return {
-            "uid": uid,
-            "email": email,
-            "displayName": display_name,
-            "githubUsername": github_username,
-            "photoURL": photo_url,
-            "createdAt": created_at,
-        }
+        return FirebaseUserProfile(
+            uid=uid,
+            email=email,
+            display_name=display_name,
+            github_username=github_username,
+            photo_url=photo_url,
+            created_at=created_at,
+        )
 
-    def ensure_user(self, uid: str, firebase_claims: dict) -> dict:
+    def ensure_user(self, uid: str, firebase_claims: dict) -> FirebaseUserProfile:
         """
         Ensure user doc exists for returning sessions (no GitHub token needed).
         Creates a minimal doc from Firebase token claims if missing.
 
-        Returns the user profile dict.
+        Returns the public user profile.
         """
         now = datetime.now(timezone.utc).isoformat()
         doc_ref = self._db.collection("users").document(uid)
@@ -103,35 +113,35 @@ class BugViperFirebaseService:
         if doc.exists:
             doc_ref.update({"lastLogin": now})
             data = doc.to_dict()
-            return {
-                "uid": uid,
-                "email": data.get("email"),
-                "displayName": data.get("displayName"),
-                "githubUsername": data.get("githubUsername"),
-                "photoURL": data.get("photoURL"),
-                "createdAt": data.get("createdAt"),
-            }
+            return FirebaseUserProfile(
+                uid=uid,
+                email=data.get("email"),
+                display_name=data.get("displayName"),
+                github_username=data.get("githubUsername"),
+                photo_url=data.get("photoURL"),
+                created_at=data.get("createdAt"),
+            )
 
         # First time — create from Firebase token claims
-        user_data = {
-            "uid": uid,
-            "email": firebase_claims.get("email"),
-            "displayName": firebase_claims.get("name"),
-            "photoURL": firebase_claims.get("picture"),
-            "createdAt": now,
-            "lastLogin": now,
-        }
-        doc_ref.set(user_data)
+        new_user = FirebaseUserData(
+            uid=uid,
+            email=firebase_claims.get("email"),
+            display_name=firebase_claims.get("name"),
+            photo_url=firebase_claims.get("picture"),
+            created_at=now,
+            last_login=now,
+        )
+        doc_ref.set(_to_dict(new_user))
 
-        return {
-            "uid": uid,
-            "email": user_data["email"],
-            "displayName": user_data["displayName"],
-            "photoURL": user_data["photoURL"],
-            "createdAt": now,
-        }
+        return FirebaseUserProfile(
+            uid=uid,
+            email=new_user.email,
+            display_name=new_user.display_name,
+            photo_url=new_user.photo_url,
+            created_at=now,
+        )
 
-    def get_user(self, uid: str) -> Optional[dict]:
+    def get_user(self, uid: str) -> Optional[FirebaseUserProfile]:
         """
         Fetch user profile from Firestore by UID.
         Returns None if user doc does not exist.
@@ -141,14 +151,14 @@ class BugViperFirebaseService:
             return None
 
         data = doc.to_dict()
-        return {
-            "uid": uid,
-            "email": data.get("email"),
-            "displayName": data.get("displayName"),
-            "githubUsername": data.get("githubUsername"),
-            "photoURL": data.get("photoURL"),
-            "createdAt": data.get("createdAt"),
-        }
+        return FirebaseUserProfile(
+            uid=uid,
+            email=data.get("email"),
+            display_name=data.get("displayName"),
+            github_username=data.get("githubUsername"),
+            photo_url=data.get("photoURL"),
+            created_at=data.get("createdAt"),
+        )
 
     def get_github_token(self, uid: str) -> Optional[str]:
         """
@@ -160,6 +170,83 @@ class BugViperFirebaseService:
             return None
         return doc.to_dict().get("githubAccessToken")
 
+
+    # ── Repo metadata ─────────────────────────────────────────────────────
+
+    def upsert_repo_metadata(
+        self,
+        uid: str,
+        owner: str,
+        repo: str,
+        data: BaseModel | dict[str, Any],
+    ) -> None:
+        """
+        Create or update the repo metadata document.
+
+        Path: users/{uid}/repos/{owner}_{repo}
+
+        Merges `data` into the document — safe to call multiple times
+        (e.g. once at job dispatch with status=pending, again at completion
+        with ingestion stats).
+
+        Accepts a Pydantic model (RepoMetadata, RepoIngestionUpdate, etc.)
+        or a plain dict for partial updates.
+        """
+        repo_key = f"{owner}_{repo}"
+        now = datetime.now(timezone.utc).isoformat()
+        doc_ref = (
+            self._db.collection("users")
+            .document(uid)
+            .collection("repos")
+            .document(repo_key)
+        )
+        doc = doc_ref.get()
+        payload = {**_to_dict(data), "updatedAt": now}
+        if doc.exists:
+            doc_ref.update(payload)
+        else:
+            payload["createdAt"] = now
+            doc_ref.set(payload)
+        logger.info(f"Upserted repo metadata for {owner}/{repo} (uid={uid})")
+
+    def get_repo_metadata(self, uid: str, owner: str, repo: str) -> Optional[dict]:
+        """Fetch the repo metadata document. Returns None if not found."""
+        repo_key = f"{owner}_{repo}"
+        doc = (
+            self._db.collection("users")
+            .document(uid)
+            .collection("repos")
+            .document(repo_key)
+            .get()
+        )
+        return doc.to_dict() if doc.exists else None
+
+    def delete_repo_metadata(self, uid: str, owner: str, repo: str) -> None:
+        """Delete the repo metadata document and all subcollections (prs, reviews)."""
+        repo_key = f"{owner}_{repo}"
+        repo_ref = (
+            self._db.collection("users")
+            .document(uid)
+            .collection("repos")
+            .document(repo_key)
+        )
+        # Delete prs subcollection and their reviews
+        for pr_doc in repo_ref.collection("prs").stream():
+            for review_doc in pr_doc.reference.collection("reviews").stream():
+                review_doc.reference.delete()
+            pr_doc.reference.delete()
+        repo_ref.delete()
+        logger.info(f"Deleted repo metadata for {owner}/{repo} (uid={uid})")
+
+    def list_repos(self, uid: str) -> list[dict]:
+        """List all ingested repos for a user."""
+        docs = (
+            self._db.collection("users")
+            .document(uid)
+            .collection("repos")
+            .stream()
+        )
+        return [doc.to_dict() for doc in docs]
 
     # ── User lookup by GitHub username ────────────────────────────────────
 
@@ -177,11 +264,20 @@ class BugViperFirebaseService:
 
     # ── PR metadata ────────────────────────────────────────────────────────
 
-    def upsert_pr_metadata(self, uid: str, owner: str, repo: str, pr_number: int, pr_data: dict) -> None:
+    def upsert_pr_metadata(
+        self,
+        uid: str,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        pr_data: BaseModel | dict[str, Any],
+    ) -> None:
         """
         Create or update the PR metadata document.
 
         Path: users/{uid}/repos/{owner}_{repo}/prs/{pr_number}
+
+        Accepts a PRMetadata model or a plain dict.
         """
         repo_key = f"{owner}_{repo}"
         now = datetime.now(timezone.utc).isoformat()
@@ -194,7 +290,7 @@ class BugViperFirebaseService:
             .document(str(pr_number))
         )
         doc = doc_ref.get()
-        payload = {**pr_data, "updatedAt": now}
+        payload = {**_to_dict(pr_data), "updatedAt": now}
         if doc.exists:
             doc_ref.update(payload)
         else:
@@ -211,13 +307,14 @@ class BugViperFirebaseService:
         owner: str,
         repo: str,
         pr_number: int,
-        run_data: dict,
+        run_data: BaseModel | dict[str, Any],
     ) -> str:
         """
         Save a review run document and update the PR's tallies.
 
         Path: users/{uid}/repos/{owner}_{repo}/prs/{pr_number}/reviews/run_{n}
 
+        Accepts a ReviewRunData model or a plain dict.
         Returns the run document ID (e.g. "run_2").
         """
         repo_key = f"{owner}_{repo}"
@@ -237,11 +334,12 @@ class BugViperFirebaseService:
         run_number = len(existing) + 1
         run_id = f"run_{run_number}"
 
+        run_dict = _to_dict(run_data)
         run_ref = pr_ref.collection("reviews").document(run_id)
-        run_ref.set({**run_data, "runNumber": run_number, "createdAt": now})
+        run_ref.set({**run_dict, "runNumber": run_number, "createdAt": now})
 
         # Update PR-level tallies
-        open_count = len([i for i in run_data.get("issues", []) if i.get("status") != "fixed"])
+        open_count = len([i for i in run_dict.get("issues", []) if i.get("status") != "fixed"])
         pr_doc = pr_ref.get()
         if pr_doc.exists:
             pr_ref.update({
