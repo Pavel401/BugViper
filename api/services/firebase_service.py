@@ -11,7 +11,14 @@ from common.firebase_models import FirebaseUserData, FirebaseUserProfile
 
 
 def _to_dict(data: BaseModel | dict[str, Any]) -> dict[str, Any]:
-    """Serialize a Pydantic model (or plain dict) to a Firestore-ready dict."""
+    """
+    Convert a Pydantic BaseModel or dict into a Firestore-ready dictionary.
+    
+    If `data` is a Pydantic BaseModel, returns its serialized form using model aliases and excluding None values. If `data` is already a dict, returns it unchanged.
+    
+    Returns:
+        dict: Dictionary suitable for writing to Firestore (keys use model aliases and None values are removed).
+    """
     if isinstance(data, BaseModel):
         return data.model_dump(by_alias=True, exclude_none=True)
     return data
@@ -52,15 +59,16 @@ class BugViperFirebaseService:
         firebase_claims: dict,
     ) -> FirebaseUserProfile:
         """
-        Create or update a user document in Firestore.
-
-        Args:
-            uid: Firebase user ID.
-            github_access_token: GitHub OAuth token (stored for later API use).
-            github_profile: Dict from GitHub /user API (may be empty on failure).
-            firebase_claims: Decoded Firebase ID token claims (fallback values).
-
-        Returns the public user profile (no access token).
+        Create or update the user's Firestore document using GitHub profile data and Firebase token claims.
+        
+        Parameters:
+            uid (str): Firebase user ID.
+            github_access_token (str): GitHub OAuth token to store for later API use.
+            github_profile (dict): Response from GitHub's /user API; may be empty on failure.
+            firebase_claims (dict): Decoded Firebase ID token claims used as fallback values.
+        
+        Returns:
+            FirebaseUserProfile: Public user profile containing uid, email, display_name, github_username, photo_url, and created_at (does not include the GitHub access token).
         """
         now = datetime.now(timezone.utc).isoformat()
 
@@ -101,10 +109,16 @@ class BugViperFirebaseService:
 
     def ensure_user(self, uid: str, firebase_claims: dict) -> FirebaseUserProfile:
         """
-        Ensure user doc exists for returning sessions (no GitHub token needed).
-        Creates a minimal doc from Firebase token claims if missing.
-
-        Returns the public user profile.
+        Ensure a Firestore user document exists for the given uid, creating a minimal record from Firebase token claims if absent.
+        
+        If a user document already exists, updates its lastLogin timestamp. If no document exists, creates one using fields from firebase_claims (email, name, picture) and sets createdAt and lastLogin to the current time.
+        
+        Parameters:
+            uid (str): The Firebase user ID.
+            firebase_claims (dict): Authentication token claims from Firebase (may include keys like "email", "name", "picture").
+        
+        Returns:
+            FirebaseUserProfile: The public-facing profile for the existing or newly created user.
         """
         now = datetime.now(timezone.utc).isoformat()
         doc_ref = self._db.collection("users").document(uid)
@@ -143,8 +157,10 @@ class BugViperFirebaseService:
 
     def get_user(self, uid: str) -> Optional[FirebaseUserProfile]:
         """
-        Fetch user profile from Firestore by UID.
-        Returns None if user doc does not exist.
+        Retrieve a user's Firebase profile by UID.
+        
+        Returns:
+            FirebaseUserProfile | None: The user's profile when a document exists for `uid`, otherwise `None`.
         """
         doc = self._db.collection("users").document(uid).get()
         if not doc.exists:
@@ -163,7 +179,9 @@ class BugViperFirebaseService:
     def get_github_token(self, uid: str) -> Optional[str]:
         """
         Retrieve the stored GitHub access token for a user.
-        Returns None if user doc doesn't exist or has no token.
+        
+        Returns:
+            The GitHub access token if present, or `None` if the user document is missing or has no token.
         """
         doc = self._db.collection("users").document(uid).get()
         if not doc.exists:
@@ -181,16 +199,12 @@ class BugViperFirebaseService:
         data: BaseModel | dict[str, Any],
     ) -> None:
         """
-        Create or update the repo metadata document.
-
-        Path: users/{uid}/repos/{owner}_{repo}
-
-        Merges `data` into the document — safe to call multiple times
-        (e.g. once at job dispatch with status=pending, again at completion
-        with ingestion stats).
-
-        Accepts a Pydantic model (RepoMetadata, RepoIngestionUpdate, etc.)
-        or a plain dict for partial updates.
+        Create or update repository metadata for a user in Firestore.
+        
+        The document is stored at users/{uid}/repos/{owner}_{repo}. The provided `data` (a Pydantic BaseModel or a plain dict) is serialized and merged into the document; `updatedAt` is always set to the current UTC timestamp and `createdAt` is set when the document is first created.
+        
+        Parameters:
+            data (BaseModel | dict[str, Any]): Repo metadata payload to upsert; may be a Pydantic model or a dict. The payload will be converted to a Firestore-ready dict and merged into the repository document.
         """
         repo_key = f"{owner}_{repo}"
         now = datetime.now(timezone.utc).isoformat()
@@ -210,7 +224,12 @@ class BugViperFirebaseService:
         logger.info(f"Upserted repo metadata for {owner}/{repo} (uid={uid})")
 
     def get_repo_metadata(self, uid: str, owner: str, repo: str) -> Optional[dict]:
-        """Fetch the repo metadata document. Returns None if not found."""
+        """
+        Retrieve repository metadata for a user.
+        
+        Returns:
+            dict | None: `None` if the repo metadata document does not exist, otherwise the document data as a dict.
+        """
         repo_key = f"{owner}_{repo}"
         doc = (
             self._db.collection("users")
@@ -222,7 +241,16 @@ class BugViperFirebaseService:
         return doc.to_dict() if doc.exists else None
 
     def delete_repo_metadata(self, uid: str, owner: str, repo: str) -> None:
-        """Delete the repo metadata document and all subcollections (prs, reviews)."""
+        """
+        Delete a repository metadata document and all nested PR and review documents for a user.
+        
+        Removes the document at users/{uid}/repos/{owner}_{repo} by deleting each document in its `prs` subcollection and each document in each PR's `reviews` subcollection.
+        
+        Parameters:
+            uid (str): User UID owning the repository.
+            owner (str): Repository owner/login.
+            repo (str): Repository name.
+        """
         repo_key = f"{owner}_{repo}"
         repo_ref = (
             self._db.collection("users")
@@ -239,7 +267,15 @@ class BugViperFirebaseService:
         logger.info(f"Deleted repo metadata for {owner}/{repo} (uid={uid})")
 
     def list_repos(self, uid: str) -> list[dict]:
-        """List all ingested repos for a user."""
+        """
+        List all repository metadata documents ingested for the given user.
+        
+        Parameters:
+            uid (str): Firebase user ID whose repo documents will be listed.
+        
+        Returns:
+            list[dict]: A list of repository metadata dictionaries, one per repo document.
+        """
         docs = (
             self._db.collection("users")
             .document(uid)
@@ -251,7 +287,12 @@ class BugViperFirebaseService:
     # ── User lookup by GitHub username ────────────────────────────────────
 
     def lookup_uid_by_github_username(self, github_username: str) -> Optional[str]:
-        """Return the Firebase UID for a given GitHub username, or None if not found."""
+        """
+        Finds the Firebase UID for a given GitHub username.
+        
+        Returns:
+            The UID of the matching user as a string, or `None` if no user with that GitHub username exists.
+        """
         docs = (
             self._db.collection("users")
             .where("githubUsername", "==", github_username)
@@ -273,11 +314,15 @@ class BugViperFirebaseService:
         pr_data: BaseModel | dict[str, Any],
     ) -> None:
         """
-        Create or update the PR metadata document.
-
-        Path: users/{uid}/repos/{owner}_{repo}/prs/{pr_number}
-
-        Accepts a PRMetadata model or a plain dict.
+        Create or update pull request metadata for the specified user, repository, and PR number.
+        
+        If a document exists it is updated with the provided data and `updatedAt` timestamp.
+        If no document exists it is created with `createdAt`, `updatedAt`, and initial
+        `reviewCount` and `openIssueCount` set to 0. `pr_data` may be a Pydantic BaseModel
+        or a plain dict and will be serialized before storage.
+        
+        Parameters:
+            pr_data (BaseModel | dict[str, Any]): PR metadata payload to store.
         """
         repo_key = f"{owner}_{repo}"
         now = datetime.now(timezone.utc).isoformat()
@@ -310,12 +355,15 @@ class BugViperFirebaseService:
         run_data: BaseModel | dict[str, Any],
     ) -> str:
         """
-        Save a review run document and update the PR's tallies.
-
-        Path: users/{uid}/repos/{owner}_{repo}/prs/{pr_number}/reviews/run_{n}
-
-        Accepts a ReviewRunData model or a plain dict.
-        Returns the run document ID (e.g. "run_2").
+        Save a review run for the given pull request and update the PR's review tallies.
+        
+        The run is assigned a sequential run number (e.g., run_1, run_2) based on existing reviews; the PR document's reviewCount, openIssueCount, and lastReviewedAt fields are updated when the PR exists.
+        
+        Parameters:
+            run_data (BaseModel | dict[str, Any]): A ReviewRunData model or a plain dict representing the run; will be serialized for storage.
+        
+        Returns:
+            str: The created run document ID (for example, "run_2").
         """
         repo_key = f"{owner}_{repo}"
         now = datetime.now(timezone.utc).isoformat()

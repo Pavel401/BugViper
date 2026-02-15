@@ -1,5 +1,3 @@
-
-
 from typing import Dict, List, Any, Optional
 import re
 import logging
@@ -37,7 +35,21 @@ class CodeQueryService:
         return {}
 
     def list_repositories(self) -> List[Dict[str, Any]]:
-        """List all repositories in the database."""
+        """
+        List repository metadata stored in the graph database.
+        
+        Returns:
+            List[Dict[str, Any]]: A list of repository records. Each dictionary contains:
+                - id: repository identifier (fallback to `repo` if `id` is absent)
+                - name: repository name
+                - owner: repository owner
+                - url: repository URL
+                - local_path: repository path on disk
+                - last_commit: last commit hash or identifier
+                - created_at: ISO-formatted creation timestamp or None
+                - updated_at: ISO-formatted last-update timestamp or None
+                - file_count: number of files in the repository (int)
+        """
         query = """
         MATCH (r:Repository)
         OPTIONAL MATCH (r)-[:CONTAINS*]->(f:File)

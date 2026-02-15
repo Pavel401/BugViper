@@ -139,7 +139,12 @@ async def delete_repository_by_name(
     user: dict = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """
-    Delete a repository by username and repo name from Neo4j and Firestore.
+    Delete the repository identified by owner and name from the graph store and attempt to remove its Firestore metadata.
+    
+    Attempts to remove the repository node from Neo4j and, regardless of the graph result, attempts to delete the corresponding Firestore metadata (Firestore failures are non-fatal). Raises HTTPException 404 if the repository was not present in the graph, or HTTPException 500 on unexpected failures.
+    
+    Returns:
+        result (Dict[str, Any]): On success, a dictionary with keys `message` (success text) and `deleted_repository_id` (the repository id "owner/name").
     """
     repo_id = f"{username}/{repo_name}"
     try:
@@ -169,7 +174,19 @@ async def delete_repository(
     user: dict = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """
-    Delete a repository and all its associated data from Neo4j and Firestore.
+    Delete the repository identified by repo_id from the graph database and attempt to remove its metadata from Firestore.
+    
+    The Firestore metadata removal is attempted when repo_id contains an owner (format "owner/repo") but failures during that cleanup are non-fatal.
+    
+    Parameters:
+        repo_id (str): Repository identifier in "owner/repo" format.
+    
+    Returns:
+        dict: A message and the `deleted_repository_id` when deletion is successful.
+    
+    Raises:
+        HTTPException: 404 if the repository is not found in the graph database.
+        HTTPException: 500 for unexpected failures during deletion.
     """
     try:
         deleted = query_service.delete_repository(repo_id)
