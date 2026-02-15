@@ -38,6 +38,21 @@ async def ingest_github_repository(
     neo4j_client: Neo4jClient = Depends(get_neo4j_client),
     user: dict = Depends(get_current_user),
 ):
+    """
+    Start an ingestion job for a GitHub repository, record initial repo metadata, and return a job response describing the created or existing ingestion job.
+    
+    This endpoint:
+    - Prevents duplicate active ingestions for the same owner/repo and returns the existing job if found.
+    - Attempts to fetch GitHub repository metadata and stores an initial repository document with ingestion_status "pending".
+    - In dev mode (env var "dev" == "true"): runs ingestion in-process, updates job status and repo metadata with ingestion stats on success, or records an error and raises on failure.
+    - In production mode: creates a job record and dispatches a Cloud Task to perform ingestion; updates job status to DISPATCHED when the task is enqueued.
+    
+    Returns:
+        IngestionJobResponse: object containing `job_id`, `status`, `message`, and `poll_url` describing the job and where to poll for status.
+    
+    Raises:
+        HTTPException: with status 500 if dev-mode ingestion fails or if Cloud Task dispatch fails.
+    """
     uid = user["uid"]
 
     # Prevent duplicate active jobs for the same repo

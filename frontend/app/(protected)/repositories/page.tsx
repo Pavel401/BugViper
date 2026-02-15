@@ -34,7 +34,12 @@ interface IngestingJob {
   repo: GitHubRepo;
 }
 
-// ── Status badge ───────────────────────────────────────────────────────────────
+/**
+ * Render a small status badge representing a repository ingestion status.
+ *
+ * @param status - Ingestion status; accepted values: "pending", "dispatched", "running", "completed", "failed"
+ * @returns A JSX element with a visual badge for syncing, synced, or failed states, or `null` for any other status
+ */
 
 function SyncBadge({ status }: { status: string }) {
   if (["pending", "dispatched", "running"].includes(status)) {
@@ -72,6 +77,13 @@ function SyncBadge({ status }: { status: string }) {
 }
 
 
+/**
+ * Render the repositories management page with repository list, GitHub picker, ingestion status badges, and delete confirmation modal.
+ *
+ * Renders UI for viewing synced repositories and optimistic pending ingestion cards, starting new ingestions via a GitHub repo picker, polling ingestion job statuses, displaying per-repository statistics, and confirming repository deletion.
+ *
+ * @returns The React element tree for the repositories management page.
+ */
 export default function RepositoriesPage() {
   const [repositories, setRepositories] = useState<Repository[]>([]);
   const [isLoadingRepos, setIsLoadingRepos] = useState(true);

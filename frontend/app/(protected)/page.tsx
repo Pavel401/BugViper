@@ -10,6 +10,11 @@ import { BugViperFullLogo } from "@/components/logo";
 import { getGraphStats, getGitHubRepos, type GitHubRepo } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 
+/**
+ * Client-side React component that renders the application's dashboard UI.
+ *
+ * @returns The dashboard React element; currently renders no UI.
+ */
 export default function Dashboard() {
  
 

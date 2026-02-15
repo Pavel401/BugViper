@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from typing import Optional
@@ -9,7 +8,17 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 def _fb(alias: str, default=None, **kwargs):
-    """Shorthand: Field with a Firestore (camelCase) serialization alias."""
+    """
+    Create a Pydantic Field configured with a camelCase serialization alias for Firestore-style documents.
+    
+    Parameters:
+        alias (str): The camelCase name to use when serializing the field.
+        default: Default value for the field (optional).
+        **kwargs: Additional keyword arguments forwarded to `pydantic.Field`.
+    
+    Returns:
+        pydantic.fields.FieldInfo: A Field configured with `serialization_alias` set to `alias`.
+    """
     return Field(default, serialization_alias=alias, **kwargs)
 
 
