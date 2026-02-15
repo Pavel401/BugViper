@@ -1,0 +1,36 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "b22fab632e54",
+  "session_id": "e3dd2b64-b8b8-46cd-a089-ce9fc4ac4b52",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-15T17:34:42.822215Z",
+  "branch": "frontend-fixes",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "api/routers/auth.py",
+    "api/routers/ingestion.py",
+    "api/routers/repository.py",
+    "db/schema.py",
+    "frontend/app/(protected)/repositories/page.tsx"
+  ],
+  "agent": "Claude Code",
+  "transcript_identifier_at_start": "f8e60a7a-b0f3-4544-adbf-8413145a26ef",
+  "checkpoint_transcript_start": 375,
+  "transcript_lines_at_start": 375,
+  "token_usage": {
+    "input_tokens": 40,
+    "cache_creation_tokens": 193613,
+    "cache_read_tokens": 2518961,
+    "output_tokens": 7409,
+    "api_call_count": 30
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-15T17:34:42.625228Z",
+    "agent_lines": 72,
+    "human_added": 204,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 276,
+    "agent_percentage": 26.08695652173913
+  }
+}
