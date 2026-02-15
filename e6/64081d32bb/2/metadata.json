@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "e664081d32bb",
+  "session_id": "e3dd2b64-b8b8-46cd-a089-ce9fc4ac4b52",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-15T06:24:37.544259Z",
+  "branch": "frontend-fixes",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "api/routers/ingestion.py",
+    "api/services/firebase_service.py",
+    "api/services/review_service.py",
+    "common/firebase_models.py"
+  ],
+  "agent": "Claude Code",
+  "token_usage": {
+    "input_tokens": 28,
+    "cache_creation_tokens": 67568,
+    "cache_read_tokens": 1546091,
+    "output_tokens": 7233,
+    "api_call_count": 26
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-15T06:24:37.498174Z",
+    "agent_lines": 386,
+    "human_added": 528,
+    "human_modified": 8,
+    "human_removed": 0,
+    "total_committed": 922,
+    "agent_percentage": 41.86550976138829
+  }
+}
