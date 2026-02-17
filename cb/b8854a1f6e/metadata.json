@@ -3,13 +3,16 @@
   "checkpoint_id": "cbb8854a1f6e",
   "strategy": "manual-commit",
   "branch": "agent-changes",
-  "checkpoints_count": 2,
+  "checkpoints_count": 3,
   "files_touched": [
     "api/services/review_service.py",
     "api/utils/comment_formatter.py",
     "deepagent/agent/review_pipeline.py",
     "deepagent/models/agent_schemas.py",
-    "deepagent/prompts.py"
+    "deepagent/prompts.py",
+    "output/review-2026-02-17_10-28-01/04c_caller_context.md",
+    "output/review-2026-02-17_10-28-01/05_risk_level.md",
+    "output/review-2026-02-17_10-28-01/06_agent_context.md"
   ],
   "sessions": [
     {
@@ -18,13 +21,20 @@
       "context": "/cb/b8854a1f6e/0/context.md",
       "content_hash": "/cb/b8854a1f6e/0/content_hash.txt",
       "prompt": "/cb/b8854a1f6e/0/prompt.txt"
+    },
+    {
+      "metadata": "/cb/b8854a1f6e/1/metadata.json",
+      "transcript": "/cb/b8854a1f6e/1/full.jsonl",
+      "context": "/cb/b8854a1f6e/1/context.md",
+      "content_hash": "/cb/b8854a1f6e/1/content_hash.txt",
+      "prompt": "/cb/b8854a1f6e/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 28,
-    "cache_creation_tokens": 96203,
-    "cache_read_tokens": 2161231,
-    "output_tokens": 13614,
-    "api_call_count": 25
+    "input_tokens": 61,
+    "cache_creation_tokens": 161997,
+    "cache_read_tokens": 3314396,
+    "output_tokens": 26063,
+    "api_call_count": 48
   }
 }
