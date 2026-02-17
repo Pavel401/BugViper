@@ -1,0 +1,38 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "63b24b799024",
+  "session_id": "46b2b246-f940-4c5c-a908-79edd836ffd6",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-17T07:00:11.774381Z",
+  "branch": "agent-changes",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "api/services/review_service.py",
+    "api/utils/comment_formatter.py",
+    "api/utils/graph_context.py",
+    "db/queries.py",
+    "deepagent/agent/review_pipeline.py",
+    "deepagent/models/agent_schemas.py",
+    "deepagent/prompts.py"
+  ],
+  "agent": "Claude Code",
+  "transcript_identifier_at_start": "faf4a188-6ff9-426c-8c00-be60e538c075",
+  "checkpoint_transcript_start": 132,
+  "transcript_lines_at_start": 132,
+  "token_usage": {
+    "input_tokens": 47,
+    "cache_creation_tokens": 32088,
+    "cache_read_tokens": 4916866,
+    "output_tokens": 8281,
+    "api_call_count": 37
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-17T07:00:11.667695Z",
+    "agent_lines": 95,
+    "human_added": 136,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 231,
+    "agent_percentage": 41.125541125541126
+  }
+}

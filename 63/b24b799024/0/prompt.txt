@@ -1,0 +1,1197 @@
+Application startup complete.
+Logfire project URL: https://logfire-us.pydantic.dev/pavel401/nomaibackend
+2026-02-17 11:37:54,546 - api.routers.webhook - INFO - Received GitHub webhook: issue_comment
+2026-02-17 11:37:54,546 - api.routers.webhook - INFO - PR review triggered: Pavel401/BugViper#5
+INFO:     140.82.115.162:0 - "POST /api/v1/webhook/onComment HTTP/1.1" 200 OK
+2026-02-17 11:37:54,547 - api.services.review_service - INFO - Starting review pipeline for Pavel401/BugViper#5
+2026-02-17 11:37:54,547 - api.services.review_service - INFO - Review debug dir: output/review-2026-02-17_11-37-54
+2026-02-17 11:37:59,878 - api.services.review_service - INFO - Fetched diff (92424 chars)
+2026-02-17 11:37:59,881 - api.services.review_service - INFO - Parsed 54 hunks across 16 files
+----- The Added source for the diff -----
+{'api/routers/auth.py': '        return UserProfile(**profile.model_dump(by_alias=True))\n        return UserProfile(**profile.model_dump(by_alias=True))\n    return UserProfile(**profile.model_dump(by_alias=True))', 'api/routers/ingestion.py': 'from datetime import datetime, timezone\nfrom api.dependencies import get_neo4j_client, get_current_user\nfrom api.services.firebase_service import firebase_service\nfrom common.github_client import GitHubClient\nfrom common.firebase_models import RepoIngestionError, RepoIngestionUpdate, RepoMetadata\n    user: dict = Depends(get_current_user),\n    uid = user.get("uid")\n    if not uid:\n        raise HTTPException(status_code=401, detail="Authenticated user has no UID")\n\n    # ── Fetch GitHub repo metadata ─────────────────────────────────────────\n    gh_meta: dict = {}\n    try:\n        gh = GitHubClient()\n        gh_meta = await gh.get_repository_info(request.owner, request.repo_name)\n    except Exception:\n        logger.warning("Could not fetch GitHub metadata for %s/%s", request.owner, request.repo_name)\n\n    # ── Write initial repo doc to Firestore (status: pending) ─────────────\n    try:\n        firebase_service.upsert_repo_metadata(\n            uid,\n            request.owner,\n            request.repo_name,\n            RepoMetadata(\n                owner=request.owner,\n                repo_name=request.repo_name,\n                full_name=gh_meta.get("full_name", f"{request.owner}/{request.repo_name}"),\n                description=gh_meta.get("description"),\n                language=gh_meta.get("language"),\n                stars=gh_meta.get("stars", 0),\n                forks=gh_meta.get("forks", 0),\n                private=gh_meta.get("private", False),\n                default_branch=gh_meta.get("default_branch", request.branch or "main"),\n                size=gh_meta.get("size", 0),\n                topics=gh_meta.get("topics", []),\n                github_created_at=gh_meta.get("created_at"),\n                github_updated_at=gh_meta.get("updated_at"),\n                branch=request.branch,\n                ingestion_status="pending",\n            ),\n        )\n    except Exception as exc:\n        logger.warning(\n            "Failed to write initial Firestore repo doc (uid=%s owner=%s repo=%s branch=%s): %s",\n            uid, request.owner, request.repo_name, request.branch, exc,\n        )\n\n        uid=uid,\n            job_stats = IngestionJobStats(\n                files_processed=stats.files_processed,\n                files_skipped=stats.files_skipped,\n                classes_found=stats.classes_found,\n                functions_found=stats.functions_found,\n                imports_found=stats.imports_found,\n                total_lines=stats.total_lines,\n                errors=stats.errors or [],\n            job_tracker.update_status(job_id, JobStatus.COMPLETED, stats=job_stats)\n\n            # ── Update Firestore with ingestion stats ──────────────────────\n            try:\n                firebase_service.upsert_repo_metadata(\n                    uid,\n                    request.owner,\n                    request.repo_name,\n                    RepoIngestionUpdate(\n                        ingestion_status="ingested",\n                        ingested_at=datetime.now(timezone.utc).isoformat(),\n                        files_processed=stats.files_processed,\n                        files_skipped=stats.files_skipped,\n                        classes_found=stats.classes_found,\n                        functions_found=stats.functions_found,\n                        imports_found=stats.imports_found,\n                        total_lines=stats.total_lines,\n                    ),\n                )\n            except Exception as fb_exc:\n                logger.warning(\n                    "Firestore stats update failed after successful ingestion "\n                    "(uid=%s owner=%s repo=%s): %s",\n                    uid, request.owner, request.repo_name, fb_exc,\n                )\n            try:\n                firebase_service.upsert_repo_metadata(\n                    uid,\n                    request.owner,\n                    request.repo_name,\n                    RepoIngestionError(ingestion_status="failed", error_message=str(exc)),\n                )\n            except Exception as fb_exc:\n                logger.warning(\n                    "Firestore error update failed after ingestion failure "\n                    "(uid=%s owner=%s repo=%s): %s",\n                    uid, request.owner, request.repo_name, fb_exc,\n                )\n        # Dispatch to Cloud Tasks → ingestion service (uid is in payload for worker to use)\n            firebase_service.upsert_repo_metadata(\n                uid,\n                request.owner,\n                request.repo_name,\n                RepoIngestionError(\n                    ingestion_status="failed",\n                    error_message="Failed to dispatch Cloud Task",\n                ),\n            )', 'api/routers/repository.py': 'import logging\nfrom api.dependencies import get_neo4j_client, get_current_user\nfrom api.services.firebase_service import firebase_service\nlogger = logging.getLogger(__name__)\ndef _cleanup_firestore_repo(uid: str, owner: str, repo_name: str) -> None:\n    """\n    Delete the Firestore repo metadata document.  Non-fatal — logs on failure.\n    """\n    try:\n        firebase_service.delete_repo_metadata(uid, owner, repo_name)\n    except Exception as exc:\n        logger.warning(\n            "Failed to delete Firestore repo metadata (uid=%s owner=%s repo=%s): %s",\n            uid, owner, repo_name, exc,\n            exc_info=True,\n        )\n\n\n    query_service: CodeQueryService = Depends(get_query_service),\n    user: dict = Depends(get_current_user),\n    Delete a repository by username and repo name from Neo4j and Firestore.\n    uid = user.get("uid")\n    if not uid:\n        raise HTTPException(status_code=401, detail="Authenticated user has no UID")\n\n        # Always clean up Firestore regardless of whether Neo4j had the repo\n        _cleanup_firestore_repo(uid, username, repo_name)\n\n            return {"message": f"Repository {repo_id} deleted successfully", "deleted_repository_id": repo_id}\n\n        raise HTTPException(status_code=404, detail="Repository not found in graph database")\n    repo_id: str = Path(..., description="Repository ID to delete (owner/repo format)"),\n    query_service: CodeQueryService = Depends(get_query_service),\n    user: dict = Depends(get_current_user),\n    Delete a repository and all its associated data from Neo4j and Firestore.\n    uid = user.get("uid")\n    if not uid:\n        raise HTTPException(status_code=401, detail="Authenticated user has no UID")\n\n    if "/" not in repo_id:\n        logger.warning(\n            "delete_repository called with malformed repo_id %r (expected owner/repo format)",\n            repo_id,\n        )\n        raise HTTPException(\n            status_code=400,\n            detail=f"repo_id must be in owner/repo format, got: {repo_id!r}",\n        )\n    try:\n        # Parse owner/repo from repo_id and clean up Firestore\n        owner, repo_name = repo_id.split("/", 1)\n        _cleanup_firestore_repo(uid, owner, repo_name)\n\n            return {"message": f"Repository {repo_id} deleted successfully", "deleted_repository_id": repo_id}\n\n        raise HTTPException(status_code=404, detail="Repository not found in graph database")', 'api/routers/webhook.py': 'from common.job_models import IncrementalPRPayload, IncrementalPushPayload', 'api/services/firebase_service.py': 'from typing import Any, Optional\n\nfrom pydantic import BaseModel\nfrom common.firebase_models import FirebaseUserData, FirebaseUserProfile\n\n\ndef _to_dict(data: BaseModel | dict[str, Any]) -> dict[str, Any]:\n    """Serialize a Pydantic model (or plain dict) to a Firestore-ready dict."""\n    if isinstance(data, BaseModel):\n        return data.model_dump(by_alias=True, exclude_none=True)\n    return data\n    ) -> FirebaseUserProfile:\n        Returns the public user profile (no access token).\n        user_doc = FirebaseUserData(\n            uid=uid,\n            email=email,\n            display_name=display_name,\n            github_username=github_username,\n            github_access_token=github_access_token,\n            photo_url=photo_url,\n            last_login=now,\n        )\n            doc_ref.update(_to_dict(user_doc))\n            full_doc = {**_to_dict(user_doc), "createdAt": now}\n            doc_ref.set(full_doc)\n        return FirebaseUserProfile(\n            uid=uid,\n            email=email,\n            display_name=display_name,\n            github_username=github_username,\n            photo_url=photo_url,\n            created_at=created_at,\n        )\n    def ensure_user(self, uid: str, firebase_claims: dict) -> FirebaseUserProfile:\n        Returns the public user profile.\n            return FirebaseUserProfile(\n                uid=uid,\n                email=data.get("email"),\n                display_name=data.get("displayName"),\n                github_username=data.get("githubUsername"),\n                photo_url=data.get("photoURL"),\n                created_at=data.get("createdAt"),\n            )\n        new_user = FirebaseUserData(\n            uid=uid,\n            email=firebase_claims.get("email"),\n            display_name=firebase_claims.get("name"),\n            photo_url=firebase_claims.get("picture"),\n            created_at=now,\n            last_login=now,\n        )\n        doc_ref.set(_to_dict(new_user))\n\n        return FirebaseUserProfile(\n            uid=uid,\n            email=new_user.email,\n            display_name=new_user.display_name,\n            photo_url=new_user.photo_url,\n            created_at=now,\n        )\n\n    def get_user(self, uid: str) -> Optional[FirebaseUserProfile]:\n        return FirebaseUserProfile(\n            uid=uid,\n            email=data.get("email"),\n            display_name=data.get("displayName"),\n            github_username=data.get("githubUsername"),\n            photo_url=data.get("photoURL"),\n            created_at=data.get("createdAt"),\n        )\n    # ── Repo metadata ─────────────────────────────────────────────────────\n\n    def upsert_repo_metadata(\n        self,\n        uid: str,\n        owner: str,\n        repo: str,\n        data: BaseModel | dict[str, Any],\n    ) -> None:\n        """\n        Create or update the repo metadata document.\n\n        Path: users/{uid}/repos/{owner}_{repo}\n\n        Merges `data` into the document — safe to call multiple times\n        (e.g. once at job dispatch with status=pending, again at completion\n        with ingestion stats).\n\n        Accepts a Pydantic model (RepoMetadata, RepoIngestionUpdate, etc.)\n        or a plain dict for partial updates.\n        """\n        repo_key = f"{owner}_{repo}"\n        now = datetime.now(timezone.utc).isoformat()\n        doc_ref = (\n            self._db.collection("users")\n            .document(uid)\n            .collection("repos")\n            .document(repo_key)\n        )\n        doc = doc_ref.get()\n        payload = {**_to_dict(data), "updatedAt": now}\n        if doc.exists:\n            doc_ref.update(payload)\n        else:\n            payload["createdAt"] = now\n            doc_ref.set(payload)\n        logger.info(f"Upserted repo metadata for {owner}/{repo} (uid={uid})")\n\n    def get_repo_metadata(self, uid: str, owner: str, repo: str) -> Optional[dict]:\n        """Fetch the repo metadata document. Returns None if not found."""\n        repo_key = f"{owner}_{repo}"\n        doc = (\n            self._db.collection("users")\n            .document(uid)\n            .collection("repos")\n            .document(repo_key)\n            .get()\n        )\n        return doc.to_dict() if doc.exists else None\n\n    def delete_repo_metadata(self, uid: str, owner: str, repo: str) -> None:\n        """Delete the repo metadata document and all subcollections (prs, reviews)."""\n        repo_key = f"{owner}_{repo}"\n        repo_ref = (\n            self._db.collection("users")\n            .document(uid)\n            .collection("repos")\n            .document(repo_key)\n        )\n        # Delete prs subcollection and their reviews\n        for pr_doc in repo_ref.collection("prs").stream():\n            for review_doc in pr_doc.reference.collection("reviews").stream():\n                review_doc.reference.delete()\n            pr_doc.reference.delete()\n        repo_ref.delete()\n        logger.info(f"Deleted repo metadata for {owner}/{repo} (uid={uid})")\n\n    def list_repos(self, uid: str) -> list[dict]:\n        """List all ingested repos for a user."""\n        docs = (\n            self._db.collection("users")\n            .document(uid)\n            .collection("repos")\n            .stream()\n        )\n        return [doc.to_dict() for doc in docs]\n\n    def upsert_pr_metadata(\n        self,\n        uid: str,\n        owner: str,\n        repo: str,\n        pr_number: int,\n        pr_data: BaseModel | dict[str, Any],\n    ) -> None:\n\n        Accepts a PRMetadata model or a plain dict.\n        payload = {**_to_dict(pr_data), "updatedAt": now}\n        run_data: BaseModel | dict[str, Any],\n        Accepts a ReviewRunData model or a plain dict.\n        if not isinstance(pr_number, int) or pr_number <= 0:\n            raise ValueError(f"save_review_run: pr_number must be a positive int, got {pr_number!r}")\n\n        run_dict = _to_dict(run_data)\n        run_ref.set({**run_dict, "runNumber": run_number, "createdAt": now})\n        open_count = len([i for i in run_dict.get("issues", []) if i.get("status") != "fixed"])\n        Fetch the most recent review run document for this specific PR.\n\n        Scoping is enforced at two levels:\n        1. Firestore path: .../prs/{pr_number}/reviews  (path-level isolation)\n        2. Field check: returned doc must have prNumber == pr_number  (defensive guard)\n\n        Returns None if no previous run exists for this PR.\n        if not isinstance(pr_number, int):\n            logger.error("get_latest_review_run: pr_number must be an int, got %r", pr_number)\n            return None\n\n\n        run = docs[0].to_dict()\n\n        # Defensive check: verify the doc belongs to this PR (guards against path bugs)\n        stored_pr = run.get("prNumber")\n        if stored_pr is not None and stored_pr != pr_number:\n            logger.error(\n                "Review run mismatch: expected prNumber=%s, got %s — ignoring stale data",\n                pr_number,\n                stored_pr,\n            )\n            return None\n\n        return run', 'api/services/review_service.py': 'from common.firebase_models import PRMetadata, ReviewRunData\n        if not isinstance(pr_number, int) or pr_number <= 0:\n            logger.error("execute_pr_review: invalid pr_number %r — aborting", pr_number)\n            return\n\n            firebase_service.upsert_pr_metadata(\n                uid,\n                owner,\n                repo,\n                pr_number,\n                PRMetadata(owner=owner, repo=repo, pr_number=pr_number, repo_id=repo_id),\n            )\n            run_doc = ReviewRunData(\n                issues=[i.model_dump() for i in reconciled.issues],\n                positive_findings=reconciled.positive_findings,\n                summary=reconciled.summary,\n                fixed_fingerprints=reconciled.fixed_fingerprints,\n                still_open_fingerprints=reconciled.still_open_fingerprints,\n                new_fingerprints=reconciled.new_fingerprints,\n                repo_id=repo_id,\n                pr_number=pr_number,\n            )', 'common/firebase_models.py': '\nfrom __future__ import annotations\n\nfrom typing import Optional\n\nfrom pydantic import BaseModel, ConfigDict, Field\n\n\n\n\ndef _fb(alias: str, default=None, **kwargs):\n    """Shorthand: Field with a Firestore (camelCase) serialization alias."""\n    return Field(default, serialization_alias=alias, **kwargs)\n\n\n\n\nclass FirebaseUserData(BaseModel):\n    """User document written to / read from users/{uid}."""\n\n    model_config = ConfigDict(populate_by_name=True)\n\n    uid: str\n    email: Optional[str] = None\n    display_name: Optional[str] = Field(None, serialization_alias="displayName")\n    github_username: Optional[str] = Field(None, serialization_alias="githubUsername")\n    github_access_token: Optional[str] = Field(None, serialization_alias="githubAccessToken")\n    photo_url: Optional[str] = Field(None, serialization_alias="photoURL")\n    last_login: Optional[str] = Field(None, serialization_alias="lastLogin")\n    created_at: Optional[str] = Field(None, serialization_alias="createdAt")\n\n\nclass FirebaseUserProfile(BaseModel):\n    """Public user profile returned by service methods (no sensitive token)."""\n\n    model_config = ConfigDict(populate_by_name=True)\n\n    uid: str\n    email: Optional[str] = None\n    display_name: Optional[str] = Field(None, serialization_alias="displayName")\n    github_username: Optional[str] = Field(None, serialization_alias="githubUsername")\n    photo_url: Optional[str] = Field(None, serialization_alias="photoURL")\n    created_at: Optional[str] = Field(None, serialization_alias="createdAt")\n\n\n\n\nclass RepoMetadata(BaseModel):\n    """\n    Full repo metadata document written at ingestion dispatch time.\n\n    Stored at: users/{uid}/repos/{owner}_{repo}\n    """\n\n    model_config = ConfigDict(populate_by_name=True)\n\n    owner: str\n    repo_name: str = Field(serialization_alias="repoName")\n    full_name: str = Field(serialization_alias="fullName")\n    description: Optional[str] = None\n    language: Optional[str] = None\n    stars: int = 0\n    forks: int = 0\n    private: bool = False\n    default_branch: str = Field("main", serialization_alias="defaultBranch")\n    size: int = 0\n    topics: list[str] = Field(default_factory=list)\n    github_created_at: Optional[str] = Field(None, serialization_alias="githubCreatedAt")\n    github_updated_at: Optional[str] = Field(None, serialization_alias="githubUpdatedAt")\n    branch: Optional[str] = None\n    ingestion_status: str = Field("pending", serialization_alias="ingestionStatus")\n\n\nclass RepoIngestionUpdate(BaseModel):\n    """\n    Partial update written after a successful ingestion run.\n\n    Only the ingestion-result fields — merged into the existing repo doc.\n    """\n\n    model_config = ConfigDict(populate_by_name=True)\n\n    ingestion_status: str = Field(serialization_alias="ingestionStatus")\n    ingested_at: str = Field(serialization_alias="ingestedAt")\n    files_processed: int = Field(serialization_alias="filesProcessed")\n    files_skipped: int = Field(serialization_alias="filesSkipped")\n    classes_found: int = Field(serialization_alias="classesFound")\n    functions_found: int = Field(serialization_alias="functionsFound")\n    imports_found: int = Field(serialization_alias="importsFound")\n    total_lines: int = Field(serialization_alias="totalLines")\n\n\nclass RepoIngestionError(BaseModel):\n    """\n    Partial update written when ingestion fails.\n    """\n\n    model_config = ConfigDict(populate_by_name=True)\n\n    ingestion_status: str = Field("failed", serialization_alias="ingestionStatus")\n    error_message: str = Field(serialization_alias="errorMessage")\n\n\n\n\nclass PRMetadata(BaseModel):\n    """\n    PR metadata document.\n\n    Stored at: users/{uid}/repos/{owner}_{repo}/prs/{pr_number}\n    """\n\n    model_config = ConfigDict(populate_by_name=True)\n\n    owner: str\n    repo: str\n    pr_number: int = Field(serialization_alias="prNumber")\n    repo_id: str = Field(serialization_alias="repoId")\n\n\n\n\nclass ReviewRunData(BaseModel):\n    """\n    Review run document saved after each LLM review.\n\n    Stored at: users/{uid}/repos/{owner}_{repo}/prs/{pr_number}/reviews/run_{n}\n\n\n    """\n\n    model_config = ConfigDict(populate_by_name=True)\n\n    issues: list[dict]\n    positive_findings: list[str]\n    summary: str\n    fixed_fingerprints: list[str]\n    still_open_fingerprints: list[str]\n    new_fingerprints: list[str]\n    repo_id: str = Field(serialization_alias="repoId")\n    pr_number: int = Field(serialization_alias="prNumber")', 'common/job_models.py': '    pr_number: Optional[int] = None\n    uid: Optional[str] = None  # Firebase UID — used to write repo metadata to Firestore on completion  ', 'db/queries.py': '        RETURN r.id as id, r.name as name, r.owner as owner,\n            MATCH (r:Repository)\n            WHERE r.id = $repo_id OR r.repo = $repo_id\n            logger.error("Error deleting repository %s: %s", repo_id, e)\n        MATCH (r:Repository)\n        WHERE r.id = $repo_id OR r.repo = $repo_id\n        MATCH (r)-[:CONTAINS*]->(f:File)\n        RETURN f.id as id, f.path as path, f.language as language,\n        MATCH (r:Repository)\n        WHERE r.id = $repo_id OR r.repo = $repo_id\n        MATCH (r)-[:CONTAINS*]->(f:File)\n        MATCH (r:Repository)\n        WHERE r.id = $repo_id OR r.repo = $repo_id\n        MATCH (r)-[:CONTAINS*]->(f:File)\n        MATCH (r:Repository)\n        WHERE r.id = $repo_id OR r.repo = $repo_id\n        MATCH (r)-[:HAS_CONFIG]->(cf:ConfigFile)\n        MATCH (r:Repository)\n        WHERE r.id = $repo_id OR r.repo = $repo_id\n        MATCH (r)-[:HAS_CONFIG]->(cf:ConfigFile)-[:HAS_DEPENDENCY]->(d:Dependency)\n\n        MATCH (r:Repository)\n        WHERE r.id = $repo_id OR r.repo = $repo_id\n', 'db/schema.py': "        OPTIONAL MATCH (r)-[:CONTAINS*]->(f:File)\n        OPTIONAL MATCH (f)-[:CONTAINS]->(c:Class)\n        OPTIONAL MATCH (f)-[:CONTAINS]->(fn:Function)\n        OPTIONAL MATCH (f)-[:CONTAINS]->(v:Variable)\n        OPTIONAL MATCH (f)-[:IMPORTS]->(m:Module)\n        WITH r, collect(DISTINCT f) as files\n        WITH r, files,\n             reduce(s = 0, f IN files | s + COALESCE(f.lines_count, 0)) as line_count\n        UNWIND CASE WHEN size(files) = 0 THEN [null] ELSE files END AS f\n            line_count,\n            [lang IN collect(DISTINCT f.language) WHERE lang IS NOT NULL AND lang <> 'unknown'] as languages\n            f.extension = $extension\n        SET f.name = $name,\n            f.source_code = $source_code,\n            f.last_updated = datetime()", 'frontend/app/(protected)/page.tsx': ' ', 'frontend/app/(protected)/repositories/page.tsx': 'import { useEffect, useMemo, useRef, useState } from "react";\nimport * as Dialog from "@radix-ui/react-dialog";\n  getGitHubRepos,\n  type GitHubRepo,\n// ── Types ──────────────────────────────────────────────────────────────────────\n\ninterface IngestingJob {\n  jobId: string;\n  status: string;\n  repo: GitHubRepo;\n}\n\n// ── Status badge ───────────────────────────────────────────────────────────────\n\nfunction SyncBadge({ status }: { status: string }) {\n  if (["pending", "dispatched", "running"].includes(status)) {\n    return (\n      <div className="flex items-center gap-1.5 text-amber-500">\n        <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">\n          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />\n          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />\n        </svg>\n        <span className="text-xs font-medium">Syncing</span>\n      </div>\n    );\n  }\n  if (status === "completed") {\n    return (\n      <div className="flex items-center gap-1.5 text-emerald-500">\n        <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">\n          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />\n        </svg>\n        <span className="text-xs font-medium">Synced</span>\n      </div>\n    );\n  }\n  if (status === "failed") {\n    return (\n      <div className="flex items-center gap-1.5 text-destructive">\n        <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">\n          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />\n        </svg>\n        <span className="text-xs font-medium">Failed</span>\n      </div>\n    );\n  }\n  return null;\n}\n\n\n  // GitHub picker\n  const [showPicker, setShowPicker] = useState(false);\n  const [githubRepos, setGithubRepos] = useState<GitHubRepo[]>([]);\n  const [loadingGithubRepos, setLoadingGithubRepos] = useState(false);\n  const [pickerSearch, setPickerSearch] = useState("");\n  const [startingRepo, setStartingRepo] = useState<string | null>(null);\n  // Delete dialog\n  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);\n  const [isDeleting, setIsDeleting] = useState(false);\n\n  // Active ingestion jobs (keyed by full_name)\n  const [ingestingJobs, setIngestingJobs] = useState<Record<string, IngestingJob>>({});\n  // Stable ref so the interval callback always reads the latest jobs without\n  // being listed as an effect dependency (avoids re-creating the interval on\n  // every status update).\n  const ingestingJobsRef = useRef(ingestingJobs);\n  useEffect(() => { ingestingJobsRef.current = ingestingJobs; }, [ingestingJobs]);\n  // ── Data loading ─────────────────────────────────────────────────────────────\n  async function fetchStats(repo: Repository) {\n    if (!repoOwner || !repoNameVal) return;\n    const repoId = repo.id ?? `${repoOwner}/${repoNameVal}`;\n    setLoadingStats((prev) => ({ ...prev, [repoId]: true }));\n      const res: RepositoryStatsResponse = await getRepositoryStats(repoOwner, repoNameVal);\n      setRepoStats((prev) => ({ ...prev, [repoId]: res.statistics }));\n    } catch {\n      // stats are optional\n      setLoadingStats((prev) => ({ ...prev, [repoId]: false }));\n      const list: Repository[] = Array.isArray(data) ? data : data?.repositories ?? [];\n      setRepositories(list);\n      list.forEach(fetchStats);\n    } catch {\n  useEffect(() => { loadRepositories(); }, []);\n\n\n  // Derived: IDs of jobs that are still running — used as the stable dep array.\n  const activeJobIds = useMemo(\n    () =>\n      Object.values(ingestingJobs)\n        .filter((j) => !["completed", "failed"].includes(j.status))\n        .map((j) => j.jobId)\n        .sort()\n        .join(","),\n    [ingestingJobs],\n  );\n\n    if (!activeJobIds) {\n      if (pollRef.current) clearInterval(pollRef.current);\n      return;\n    }\n      // Read the current snapshot via ref — no stale closure over `ingestingJobs`.\n      const jobs = Object.values(ingestingJobsRef.current).filter(\n        (j) => !["completed", "failed"].includes(j.status)\n      );\n      for (const job of jobs) {\n        try {\n          const res = await getIngestionJobStatus(job.jobId);\n          const next = res.status;\n\n          setIngestingJobs((prev) => {\n            if (!prev[job.repo.full_name]) return prev;\n            return { ...prev, [job.repo.full_name]: { ...prev[job.repo.full_name], status: next } };\n          });\n\n          if (next === "completed") {\n            toast.success(`${job.repo.full_name} synced successfully`);\n            loadRepositories();\n            setTimeout(() => {\n              setIngestingJobs((prev) => {\n                const copy = { ...prev };\n                delete copy[job.repo.full_name];\n                return copy;\n              });\n            }, 3000);\n          } else if (next === "failed") {\n            toast.error(`Sync failed for ${job.repo.full_name}`);\n          }\n        } catch {\n          // silent\n    return () => { if (pollRef.current) clearInterval(pollRef.current); };\n  }, [activeJobIds]); // eslint-disable-line react-hooks/exhaustive-deps\n  async function openPicker() {\n    setShowPicker(true);\n    setPickerSearch("");\n    if (githubRepos.length > 0) return;\n    setLoadingGithubRepos(true);\n      setGithubRepos(await getGitHubRepos());\n    } catch {\n      toast.error("Failed to load GitHub repositories");\n    } finally {\n      setLoadingGithubRepos(false);\n  async function handleStart(repo: GitHubRepo) {\n    setStartingRepo(repo.full_name);\n    try {\n      const [owner, repoName] = repo.full_name.split("/");\n      const res = await ingestGithub({ owner, repo_name: repoName, branch: repo.default_branch });\n      setShowPicker(false);\n      setIngestingJobs((prev) => ({\n        ...prev,\n        [repo.full_name]: { jobId: res.job_id, status: res.status, repo },\n      }));\n    } catch (err) {\n      toast.error(`Failed to start: ${err instanceof Error ? err.message : "Unknown error"}`);\n    } finally {\n      setStartingRepo(null);\n  }\n  async function confirmDelete() {\n    if (!deleteTarget) return;\n    setIsDeleting(true);\n      await deleteRepository(deleteTarget);\n      toast.success("Repository deleted");\n      setDeleteTarget(null);\n    } catch {\n    } finally {\n      setIsDeleting(false);\n  const existingKeys = new Set(\n    repositories.map((r) => `${r.owner ?? r.username}/${r.name ?? r.repo_name}`)\n  );\n  const pendingCards = Object.values(ingestingJobs).filter(\n    (j) => !existingKeys.has(j.repo.full_name)\n  );\n\n  const filteredRepos = githubRepos.filter(\n    (r) =>\n      r.full_name.toLowerCase().includes(pickerSearch.toLowerCase()) ||\n      (r.description ?? "").toLowerCase().includes(pickerSearch.toLowerCase())\n  );\n    <div className="container py-8 space-y-6 max-w-5xl mx-auto">\n      {/* Header */}\n      <div className="flex items-center justify-between">\n        <div>\n          <h1 className="text-2xl font-semibold">Repositories</h1>\n          <p className="text-sm text-muted-foreground mt-0.5">\n            {repositories.length + pendingCards.length} repositories\n          </p>\n        </div>\n        <Button onClick={openPicker} size="sm" className="gap-1.5">\n          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">\n            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />\n          </svg>\n          Add Repository\n        </Button>\n      {/* Repository list */}\n      <div className="space-y-2">\n        {isLoadingRepos ? (\n          <>\n            <Skeleton className="h-20 w-full rounded-lg" />\n            <Skeleton className="h-20 w-full rounded-lg" />\n          </>\n        ) : repositories.length === 0 && pendingCards.length === 0 ? (\n          <div className="text-center py-16 text-muted-foreground border rounded-xl border-dashed">\n            <p className="font-medium">No repositories yet</p>\n            <p className="text-sm mt-1">Click <strong>Add Repository</strong> to get started</p>\n        ) : (\n          <>\n            {/* Optimistic cards for repos being ingested */}\n            {pendingCards.map((job) => {\n              const [owner, repoName] = job.repo.full_name.split("/");\n              return (\n                <div\n                  key={job.repo.full_name}\n                  className="flex items-center justify-between px-4 py-3.5 rounded-lg border bg-card"\n                >\n                  <div className="space-y-1">\n                    <div className="flex items-center gap-2.5">\n                      <span className="font-medium text-sm">{owner}/{repoName}</span>\n                      <SyncBadge status={job.status} />\n                    </div>\n                    {job.repo.language && (\n                      <span className="text-xs text-muted-foreground">{job.repo.language}</span>\n                    )}\n                  </div>\n                </div>\n              );\n            })}\n\n            {/* Synced repositories */}\n            {repositories.map((repo) => {\n              const repoOwner = repo.owner ?? repo.username;\n              const repoNameVal = repo.name ?? repo.repo_name;\n              const key = `${repoOwner}/${repoNameVal}`;\n              const repoId = repo.id ?? `${repoOwner}/${repoNameVal}`;\n              const job = ingestingJobs[key];\n              const stats = repoStats[repoId];\n              const isLoadingStatsForRepo = loadingStats[repoId];\n\n              return (\n                <div\n                  key={repoId}\n                  className="flex items-center justify-between px-4 py-3.5 rounded-lg border bg-card hover:bg-accent/30 transition-colors"\n                >\n                  <div className="space-y-1.5 flex-1 min-w-0">\n                    <div className="flex items-center gap-2.5">\n                      <span className="font-medium text-sm">{repoOwner}/{repoNameVal}</span>\n                      {job ? (\n                        <SyncBadge status={job.status} />\n                      ) : (\n                        <div className="flex items-center gap-1.5 text-emerald-500">\n                          <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">\n                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />\n                          </svg>\n                          <span className="text-xs font-medium">Synced</span>\n                        </div>\n                      )}\n                    </div>\n                    {isLoadingStatsForRepo ? (\n                      <Skeleton className="h-4 w-48" />\n                    ) : stats ? (\n                      <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">\n                        <span>{stats.files.toLocaleString()} files</span>\n                        <span>{stats.functions.toLocaleString()} functions</span>\n                        <span>{stats.classes.toLocaleString()} classes</span>\n                        <span>{stats.lines.toLocaleString()} lines</span>\n                        {stats.languages?.slice(0, 3).map((lang) => (\n                          <Badge key={lang} variant="secondary" className="text-xs h-4 px-1.5">{lang}</Badge>\n                        ))}\n                      </div>\n                    ) : null}\n                  </div>\n                  <button\n                    onClick={() => setDeleteTarget(repo.id ?? `${repoOwner}/${repoNameVal}`)}\n                    aria-label={`Delete repository ${repoOwner}/${repoNameVal}`}\n                    className="p-2 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors shrink-0 ml-3"\n                  >\n                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">\n                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />\n                    </svg>\n                  </button>\n                </div>\n              );\n            })}\n          </>\n        )}\n      </div>\n      {/* Delete confirmation dialog — Radix Dialog for focus-trap, Escape, ARIA */}\n      <Dialog.Root\n        open={deleteTarget !== null}\n        onOpenChange={(open) => { if (!open && !isDeleting) setDeleteTarget(null); }}\n      >\n        <Dialog.Portal>\n          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" />\n          <Dialog.Content\n            className="fixed left-1/2 top-1/2 z-50 w-full max-w-sm -translate-x-1/2 -translate-y-1/2 mx-4 bg-background border rounded-xl shadow-2xl focus:outline-none"\n            onInteractOutside={(e) => { if (isDeleting) e.preventDefault(); }}\n          >\n            {/* Icon + title */}\n            <div className="flex items-start gap-3 px-6 pt-6 pb-4">\n              <div className="flex items-center justify-center w-9 h-9 rounded-full bg-destructive/10 shrink-0 mt-0.5">\n                <svg className="w-4 h-4 text-destructive" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">\n                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />\n                </svg>\n              </div>\n              <div className="space-y-1">\n                <Dialog.Title className="font-semibold text-sm">Delete repository</Dialog.Title>\n                <Dialog.Description className="text-sm text-muted-foreground">\n                  Are you sure you want to delete{" "}\n                  <span className="font-medium text-foreground">{deleteTarget}</span>?\n                  This will remove all ingested graph data and cannot be undone.\n                </Dialog.Description>\n              </div>\n            {/* Actions */}\n            <div className="flex items-center justify-end gap-2 px-6 py-4 border-t">\n              <Dialog.Close asChild>\n                <button\n                  disabled={isDeleting}\n                  className="px-3 py-1.5 text-sm rounded-md border hover:bg-accent transition-colors disabled:opacity-50"\n                >\n                  Cancel\n                </button>\n              </Dialog.Close>\n              <button\n                onClick={confirmDelete}\n                disabled={isDeleting}\n                className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-md bg-destructive text-white hover:bg-destructive/90 transition-colors disabled:opacity-50"\n              >\n                {isDeleting ? (\n                  <>\n                    <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">\n                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />\n                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />\n                    </svg>\n                    Deleting…\n                  </>\n                ) : "Delete"}\n              </button>\n          </Dialog.Content>\n        </Dialog.Portal>\n      </Dialog.Root>\n\n      {/* GitHub Repo Picker Modal */}\n      {showPicker && (\n        <div className="fixed inset-0 z-50 flex items-center justify-center">\n          <div\n            className="absolute inset-0 bg-black/50 backdrop-blur-sm"\n            onClick={() => setShowPicker(false)}\n          />\n          <div className="relative z-10 w-full max-w-md mx-4 bg-background border rounded-xl shadow-2xl flex flex-col max-h-[75vh]">\n            {/* Header */}\n            <div className="flex items-center justify-between px-5 py-4 border-b">\n              <h2 className="font-semibold">Add Repository</h2>\n              <button\n                onClick={() => setShowPicker(false)}\n                className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded-md hover:bg-accent"\n              >\n                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">\n                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />\n                </svg>\n              </button>\n            {/* Search */}\n            <div className="px-4 py-3 border-b">\n              <Input\n                placeholder="Search repositories..."\n                value={pickerSearch}\n                onChange={(e) => setPickerSearch(e.target.value)}\n                autoFocus\n                className="h-8 text-sm"\n              />\n            {/* List */}\n            <div className="flex-1 overflow-y-auto py-1">\n              {loadingGithubRepos ? (\n                <div className="space-y-1 p-3">\n                  {[1, 2, 3, 4, 5].map((n) => <Skeleton key={n} className="h-14 w-full rounded-lg" />)}\n                </div>\n              ) : filteredRepos.length === 0 ? (\n                <div className="text-center py-10 text-sm text-muted-foreground">\n                  {pickerSearch ? "No matching repositories" : "No repositories found"}\n                </div>\n              ) : (\n                filteredRepos.map((repo) => {\n                  const isStarting = startingRepo === repo.full_name;\n                  const alreadyIngesting = repo.full_name in ingestingJobs;\n                  const alreadyIngested = existingKeys.has(repo.full_name);\n                  const disabled = isStarting || alreadyIngesting || alreadyIngested;\n\n                  return (\n                    <div\n                      key={repo.full_name}\n                      className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-accent/50 transition-colors"\n                    >\n                      <div className="flex-1 min-w-0">\n                        <div className="flex items-center gap-2">\n                          <span className="font-medium text-sm truncate">{repo.full_name}</span>\n                          {repo.private && (\n                            <span className="text-xs text-muted-foreground border rounded px-1 shrink-0">\n                              Private\n                            </span>\n                        <div className="flex items-center gap-2 mt-0.5">\n                          {repo.language && (\n                            <span className="text-xs text-muted-foreground">{repo.language}</span>\n                          )}\n                          {repo.stargazers_count > 0 && (\n                            <span className="text-xs text-muted-foreground">★ {repo.stargazers_count}</span>\n                          )}\n                          {repo.description && (\n                            <span className="text-xs text-muted-foreground truncate">{repo.description}</span>\n                          )}\n                        </div>\n                      </div>\n                      <Button\n                        size="sm"\n                        variant={alreadyIngested ? "outline" : "default"}\n                        disabled={disabled}\n                        onClick={() => handleStart(repo)}\n                        className="shrink-0 h-7 text-xs px-3"\n                      >\n                        {isStarting ? (\n                          <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">\n                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />\n                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />\n                          </svg>\n                        ) : alreadyIngested ? "Synced" : alreadyIngesting ? "Syncing" : "Start"}\n                      </Button>\n                  );\n                })\n              )}\n          </div>\n        </div>\n      )}', 'frontend/components/sidebar.tsx': '  // { href: "/", label: "Dashboard", icon: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1" },', 'frontend/next.config.ts': '  reactStrictMode: false,', 'frontend/package-lock.json': '        "@radix-ui/react-dialog": "^1.1.15",\n    "node_modules/@radix-ui/react-dialog": {\n      "version": "1.1.15",\n      "resolved": "https://registry.npmjs.org/@radix-ui/react-dialog/-/react-dialog-1.1.15.tgz",\n      "integrity": "REDACTED",\n      "license": "MIT",\n      "dependencies": {\n        "@radix-ui/primitive": "1.1.3",\n        "@radix-ui/react-compose-refs": "1.1.2",\n        "@radix-ui/react-context": "1.1.2",\n        "@radix-ui/react-dismissable-layer": "1.1.11",\n        "@radix-ui/react-focus-guards": "1.1.3",\n        "@radix-ui/react-focus-scope": "1.1.7",\n        "@radix-ui/react-id": "1.1.1",\n        "@radix-ui/react-portal": "1.1.9",\n        "@radix-ui/react-presence": "1.1.5",\n        "@radix-ui/react-primitive": "2.1.3",\n        "@radix-ui/react-slot": "1.2.3",\n        "@radix-ui/react-use-controllable-state": "1.2.2",\n        "aria-hidden": "^1.2.4",\n        "react-remove-scroll": "^2.6.3"\n      },\n      "peerDependencies": {\n        "@types/react": "*",\n        "@types/react-dom": "*",\n        "react": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc",\n        "react-dom": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc"\n      },\n      "peerDependenciesMeta": {\n        "@types/react": {\n          "optional": true\n        },\n        "@types/react-dom": {\n          "optional": true\n        }\n      }\n    },\n    "node_modules/@radix-ui/react-dialog/node_modules/@radix-ui/react-primitive": {\n      "version": "2.1.3",\n      "resolved": "https://registry.npmjs.org/@radix-ui/react-primitive/-/react-primitive-2.1.3.tgz",\n      "integrity": "REDACTED",\n      "license": "MIT",\n      "dependencies": {\n        "@radix-ui/react-slot": "1.2.3"\n      },\n      "peerDependencies": {\n        "@types/react": "*",\n        "@types/react-dom": "*",\n        "react": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc",\n        "react-dom": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc"\n      },\n      "peerDependenciesMeta": {\n        "@types/react": {\n          "optional": true\n        },\n        "@types/react-dom": {\n          "optional": true\n        }\n      }\n    },\n    "node_modules/@radix-ui/react-dialog/node_modules/@radix-ui/react-slot": {\n      "version": "1.2.3",\n      "resolved": "https://registry.npmjs.org/@radix-ui/react-slot/-/react-slot-1.2.3.tgz",\n      "integrity": "REDACTED",\n      "license": "MIT",\n      "dependencies": {\n        "@radix-ui/react-compose-refs": "1.1.2"\n      },\n      "peerDependencies": {\n        "@types/react": "*",\n        "react": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc"\n      },\n      "peerDependenciesMeta": {\n        "@types/react": {\n          "optional": true\n        }\n      }\n    },', 'frontend/package.json': '    "@radix-ui/react-dialog": "^1.1.15",'}2026-02-17 11:38:00,452 - api.services.review_service - INFO - Diff extraction: 17 imports, 15 functions, 7 classes
+2026-02-17 11:38:01,788 - db.client - INFO - Connected to Neo4j database
+2026-02-17 11:38:04,398 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:06,226 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:07,912 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:08,666 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:10,359 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:11,097 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:13,726 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:14,470 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:15,160 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:15,899 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:18,872 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:21,041 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:23,186 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:23,977 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:25,448 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:27,331 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:29,332 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:30,745 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:33,560 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:35,652 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:37,609 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:41,093 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:43,057 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:44,780 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:45,465 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:46,195 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:46,924 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:47,609 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:48,349 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:49,869 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:50,601 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:51,342 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:52,065 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:55,156 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:38:58,713 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:39:01,472 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:39:03,472 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:39:05,536 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:39:06,744 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:39:08,683 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:39:10,618 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:39:12,555 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:39:13,711 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:39:14,399 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:39:15,328 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:39:16,055 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:39:16,788 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:39:17,472 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:39:23,531 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:39:24,254 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:39:24,983 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:39:25,820 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:39:26,561 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:39:27,288 - neo4j.notifications - WARNING - Received notification from DBMS server: <GqlStatusObject gql_status='01N52', status_description='warn: property key does not exist. The property `alias` does not exist in database `neo4j`. Verify that the spelling is correct.', position=<SummaryInputPosition line=5, column=19, offset=139>, raw_classification='UNRECOGNIZED', classification=<NotificationClassification.UNRECOGNIZED: 'UNRECOGNIZED'>, raw_severity='WARNING', severity=<NotificationSeverity.WARNING: 'WARNING'>, diagnostic_record={'_classification': 'UNRECOGNIZED', '_severity': 'WARNING', '_position': {'offset': 139, 'line': 5, 'column': 19}, 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: '\n            MATCH (f:File {repo: $repo_id, path: $file_path})\n            MATCH (f)-[r:IMPORTS]->(m)\n            RETURN\n                r.alias          AS alias,\n                r.imported_name  AS imported_name,\n                m.name           AS module_name,\n                r.line_number    AS line_number\n            ORDER BY r.line_number\n            LIMIT 20\n            '
+2026-02-17 11:39:27,395 - api.services.review_service - INFO - Graph context: 42 affected symbols, 47 callers, 0 imports
+/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/google/cloud/firestore_v1/base_collection.py:316: UserWarning: Detected filter using positional arguments. Prefer using the 'filter' keyword argument instead.
+  return query.where(field_path, op_string, value)
+2026-02-17 11:39:31,919 - api.services.review_service - INFO - Loaded previous run #1 for Pavel401/BugViper#5
+2026-02-17 11:39:36,716 - urllib3.connectionpool - WARNING - Connection pool is full, discarding connection: api.github.com. Connection pool size: 10
+2026-02-17 11:39:37,374 - urllib3.connectionpool - WARNING - Connection pool is full, discarding connection: api.github.com. Connection pool size: 10
+2026-02-17 11:39:37,375 - api.services.review_service - INFO - Fetched 9/16 full file snapshots
+2026-02-17 11:39:37,375 - deepagent.agent.review_pipeline - INFO - Starting multi-agent review for Pavel401/BugViper#5
+2026-02-17 11:39:41,467 - httpx - INFO - HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+2026-02-17 11:39:48,156 - httpx - INFO - HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+2026-02-17 11:43:59,883 - api.services.review_service - ERROR - Review pipeline failed: Traceback (most recent call last):
+  File "/Users/skmabudalam/Documents/BugViper/api/services/review_service.py", line 668, in execute_pr_review
+    review_results = await run_review(review_prompt, repo_id, pr_number)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/skmabudalam/Documents/BugViper/deepagent/agent/review_pipeline.py", line 68, in run_review
+    bug_result, sec_result = await asyncio.gather(
+                             ^^^^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+    )
+    ^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_ai/agent/abstract.py", line 258, in run
+    async with self.iter(
+               ~~~~~~~~~^
+        user_prompt=user_prompt,
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<11 lines>...
+        builtin_tools=builtin_tools,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ) as agent_run:
+    ^
+  File "/Users/skmabudalam/.local/share/uv/python/cpython-3.13.5-macos-aarch64-none/lib/python3.13/contextlib.py", line 235, in __aexit__
+    await self.gen.athrow(value)
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_ai/agent/__init__.py", line 705, in iter
+    async with graph.iter(
+               ~~~~~~~~~~^
+        inputs=user_prompt_node,
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+        infer_name=False,
+        ^^^^^^^^^^^^^^^^^
+    ) as graph_run:
+    ^
+  File "/Users/skmabudalam/.local/share/uv/python/cpython-3.13.5-macos-aarch64-none/lib/python3.13/contextlib.py", line 235, in __aexit__
+    await self.gen.athrow(value)
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_graph/beta/graph.py", line 270, in iter
+    async with GraphRun[StateT, DepsT, OutputT](
+               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        graph=self,
+        ^^^^^^^^^^^
+    ...<3 lines>...
+        traceparent=traceparent,
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+    ) as graph_run:
+    ^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_graph/beta/graph.py", line 423, in __aexit__
+    await self._async_exit_stack.__aexit__(exc_type, exc_val, exc_tb)
+  File "/Users/skmabudalam/.local/share/uv/python/cpython-3.13.5-macos-aarch64-none/lib/python3.13/contextlib.py", line 768, in __aexit__
+    raise exc
+  File "/Users/skmabudalam/.local/share/uv/python/cpython-3.13.5-macos-aarch64-none/lib/python3.13/contextlib.py", line 749, in __aexit__
+    cb_suppress = cb(*exc_details)
+  File "/Users/skmabudalam/.local/share/uv/python/cpython-3.13.5-macos-aarch64-none/lib/python3.13/contextlib.py", line 162, in __exit__
+    self.gen.throw(value)
+    ~~~~~~~~~~~~~~^^^^^^^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_graph/beta/graph.py", line 981, in _unwrap_exception_groups
+    raise exception
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_graph/beta/graph.py", line 750, in _run_tracked_task
+    result = await self._run_task(t_)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_graph/beta/graph.py", line 782, in _run_task
+    output = await node.call(step_context)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_graph/beta/step.py", line 253, in _call_node
+    return await node.run(GraphRunContext(state=ctx.state, deps=ctx.deps))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_ai/_agent_graph.py", line 452, in run
+    return await self._make_request(ctx)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_ai/_agent_graph.py", line 497, in _make_request
+    model_response = await ctx.deps.model.request(message_history, model_settings, model_request_parameters)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_ai/models/instrumented.py", line 399, in request
+    response = await self.wrapped.request(messages, model_settings, model_request_parameters)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_ai/models/openai.py", line 559, in request
+    response = await self._completions_create(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        messages, False, cast(OpenAIChatModelSettings, model_settings or {}), model_request_parameters
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/pydantic_ai/models/openai.py", line 646, in _completions_create
+    return await self.client.chat.completions.create(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<28 lines>...
+    )
+    ^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/openai/resources/chat/completions/completions.py", line 2678, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+    ...<49 lines>...
+    )
+    ^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/openai/_base_client.py", line 1797, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/openai/_base_client.py", line 1602, in request
+    return await self._process_response(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/openai/_base_client.py", line 1691, in _process_response
+    return await api_response.parse()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/openai/_response.py", line 430, in parse
+    parsed = self._parse(to=to)
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/openai/_response.py", line 265, in _parse
+    data = response.json()
+  File "/Users/skmabudalam/Documents/BugViper/.venv/lib/python3.13/site-packages/httpx/_models.py", line 832, in json
+    return jsonlib.loads(self.content, **kwargs)
+           ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/skmabudalam/.local/share/uv/python/cpython-3.13.5-macos-aarch64-none/lib/python3.13/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^
+  File "/Users/skmabudalam/.local/share/uv/python/cpython-3.13.5-macos-aarch64-none/lib/python3.13/json/decoder.py", line 345, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/skmabudalam/.local/share/uv/python/cpython-3.13.5-macos-aarch64-none/lib/python3.13/json/decoder.py", line 363, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1241 column 1 (char 6820)
+
+---
+
+## 🐍 BugViper AI Code Review
+
+**PR**: #5 | **Model**: z-ai/glm-5
+
+**Run #2 — 11 fixed, 2 still open, 9 new**
+
+---
+
+## 📁 Files Changed
+
+| File | +Added | -Removed | Summary |
+|------|--------|----------|---------|
+| `api/routers/auth.py` | 3 | 3 | Modified |
+| `api/routers/ingestion.py` | 105 | 14 | GitHub API field key mismatch for stars and forks |
+| `api/routers/repository.py` | 56 | 27 | Missing authorization check for repository deletion |
+| `api/routers/webhook.py` | 1 | 2 | Unused imports in webhook router |
+| `api/services/firebase_service.py` | 191 | 68 | Modified |
+| `api/services/review_service.py` | 22 | 16 | Modified |
+| `common/firebase_models.py` | 141 | 0 | repo_name field in RepoMetadata has no default value and cannot be instantiated |
+| `common/job_models.py` | 2 | 1 | Modified |
+| `db/queries.py` | 24 | 12 | Modified |
+| `db/schema.py` | 15 | 14 | Modified |
+| `frontend/app/(protected)/page.tsx` | 1 | 158 | Empty Dashboard component function body |
+| `frontend/app/(protected)/repositories/page.tsx` | 427 | 320 | Modified |
+| `frontend/components/sidebar.tsx` | 1 | 1 | Modified |
+| `frontend/next.config.ts` | 1 | 1 | Modified |
+| `frontend/package-lock.json` | 78 | 0 | Modified |
+| `frontend/package.json` | 1 | 0 | Modified |
+
+---
+
+### 📊 Impact Analysis
+
+- **Symbols modified**: 56
+- **Downstream callers**: 47
+- **Risk level**: 🔴 HIGH
+
+---
+
+### ✅ Fixed Since Last Review
+
+- ~~**Unused import 'os' in repository router**~~ in `api/routers/repository.py` — resolved
+- ~~**Potential key mismatch for GitHub metadata 'stars' field**~~ in `api/routers/ingestion.py` — resolved
+- ~~**Potential key mismatch for GitHub metadata 'forks' field**~~ in `api/routers/ingestion.py` — resolved
+- ~~**Potentially incorrect Field default syntax in RepoMetadata**~~ in `common/firebase_models.py` — resolved
+- ~~**Potentially incorrect Field default syntax in RepoIngestionUpdate**~~ in `common/firebase_models.py` — resolved
+- ~~**Missing Authorization Check for Repository Deletion**~~ in `api/routers/repository.py` — resolved
+- ~~**Missing Authorization Check for Repository Deletion by ID**~~ in `api/routers/repository.py` — resolved
+- ~~**Uncaught Exception from String Split on Malformed Input**~~ in `api/routers/repository.py` — resolved
+- ~~**Error Messages May Contain Sensitive Information**~~ in `api/routers/ingestion.py` — resolved
+- ~~**GitHub Metadata Fetch Failures Silently Ignored**~~ in `api/routers/ingestion.py` — resolved
+- ~~**reactStrictMode Disabled in Next.js Configuration**~~ in `frontend/next.config.ts` — resolved
+
+### 🔁 Still Open
+
+- 🟡 **[style] Unused imports in webhook router** — `api/routers/webhook.py`:10
+  `IncrementalPRPayload` and `IncrementalPushPayload` are imported from `common.job_models` but are never used in the visible code within this file. These appear to be dead imports.
+- 🟢 **[style] Empty Dashboard component function body** — `frontend/app/(protected)/page.tsx`:11
+  The `Dashboard` function has an almost empty body after the diff changes. The previous implementation with state management and JSX was removed but not replaced, leaving dead code that renders nothing.
+
+### 🆕 New Issues This Run
+
+#### 🔴 Critical
+- 🔴 **[bug] repo_name field in RepoMetadata has no default value and cannot be instantiated** — `common/firebase_models.py`:70
+  The `repo_name` field is defined as `repo_name: str = Field(serialization_alias="repoName")` where the string "repoName" is incorrectly interpreted by Pydantic as the default value, not as a configuration. This is a required field with no proper default, which contradicts the usage in `api/routers/ingestion.py` line 71 where `RepoMetadata(repo_name=request.repo_name, ...)` expects `repo_name` to be a required parameter. The Field syntax is incorrect - it should be `Field(serialization_alias="repoName")` without the string as a positional arg, or `repo_name: str` without the `= Field(...)` assignment for a required field.
+  <details>
+  <summary>🤖 Suggested fix</summary>
+
+  ```
+  repo_name: str = Field(serialization_alias="repoName")
+  ```
+  </details>
+
+#### 🟠 High
+- 🟠 **[security] Missing authorization check for repository deletion** — `api/routers/repository.py`:152
+  The `delete_repository_by_name` endpoint authenticates the user but does not verify that the authenticated user owns the repository being deleted. Any authenticated user can delete any repository they know the name of. This is a Broken Access Control vulnerability (CWE-862).
+- 🟠 **[security] Missing authorization check for repository deletion by ID** — `api/routers/repository.py`:188
+  Similar to delete_repository_by_name, this endpoint authenticates the user but does not verify ownership of the repository being deleted. The repo_id is taken directly from the path without verifying permissions. This is a Broken Access Control vulnerability (CWE-862).
+- 🟠 **[security] Missing Authorization Check for Repository Deletion by ID** — `api/routers/repository.py`:185
+  The `delete_repository` endpoint authenticates users but does not verify ownership of the repository being deleted. The `repo_id` (in 'owner/repo' format) is taken directly from the path without verifying that the authenticated user has permission to delete that repository. Any authenticated user can delete any repository they can identify.
+  **Fix**: Implement ownership verification. Parse the owner from repo_id and verify it matches the authenticated user's identity, or implement a proper ACL system for repository access control.
+
+#### 🟡 Medium
+- 🟡 **[bug] GitHub API field key mismatch for stars and forks** — `api/routers/ingestion.py`:74
+  The code uses `gh_meta.get("stars", 0)` and `gh_meta.get("forks", 0)`, but GitHub's API typically returns star count as `stargazers_count` and fork count as `forks_count` (or just `forks`). This will silently default to 0 for most repositories, displaying incorrect metadata.
+- 🟡 **[bug] Empty string values after splitting malformed repo_id** — `api/routers/repository.py`:210
+  After validating that '/' exists in repo_id, the code splits it with `owner, repo_name = repo_id.split("/", 1)`. For inputs like "/repo" or "owner/", this could result in empty strings being passed to `_cleanup_firestore_repo`, potentially causing unexpected Firestore operations.
+  <details>
+  <summary>🤖 Suggested fix</summary>
+
+  ```
+  owner, repo_name = repo_id.split("/", 1)
+if not owner or not repo_name:
+    raise HTTPException(status_code=400, detail="Invalid repo_id format")
+  ```
+  </details>
+- 🟡 **[security] Sensitive Information in Error Messages** — `api/routers/ingestion.py`:162
+  When ingestion fails in dev mode, the raw exception message `str(exc)` is returned in the HTTP response via `HTTPException(status_code=500, detail=str(exc))`. Exception messages from external libraries, the ingestion engine, or database operations may contain sensitive information such as file paths, internal API endpoints, configuration details, or stack traces that could aid attackers in understanding the system internals.
+  **Fix**: Return a generic error message to users while logging the detailed exception server-side. For example: `raise HTTPException(status_code=500, detail="Ingestion failed. Please try again or contact support.")`
+- 🟡 **[security] Sensitive Exception Details Stored in Firestore** — `api/routers/ingestion.py`:166
+  When ingestion fails, the raw exception message `str(exc)` is stored in Firestore via `RepoIngestionError(ingestion_status="failed", error_message=str(exc))`. Exception messages may contain sensitive information such as file system paths, database connection strings, API endpoints, or other internal system details. This data may be accessible to other parts of the application or exposed through API responses.
+  **Fix**: Sanitize or truncate exception messages before storing. Store only high-level error categories (e.g., 'network_error', 'parse_error') and log full details server-side where access is restricted.
+- 🟡 **[security] Potential Empty String Values from String Split** — `api/routers/repository.py`:208
+  After validating that '/' exists in repo_id, the code splits it with `owner, repo_name = repo_id.split("/", 1)`. However, inputs like "/", "owner/", or "/repo" would pass the validation but result in empty strings for owner or repo_name. These empty values are then passed to `_cleanup_firestore_repo` and could cause unexpected behavior in Firestore operations.
+  **Fix**: Add validation after the split to ensure neither owner nor repo_name is empty: `if not owner or not repo_name: raise HTTPException(status_code=400, detail="Invalid repo_id format")`
+  <details>
+  <summary>🤖 Suggested fix</summary>
+
+  ```
+          try:
+            owner, repo_name = repo_id.split("/", 1)
+            if not owner or not repo_name:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid repo_id format: {repo_id!r} - both owner and repo name required",
+                )
+            _cleanup_firestore_repo(uid, owner, repo_name)
+  ```
+  </details>
+
+### 👍 Positive Findings
+- The PR successfully refactors Firebase service methods to use typed Pydantic models (FirebaseUserData, FirebaseUserProfile, RepoMetadata, etc.) for better type safety and documentation
+- Firestore repo metadata is now properly tracked with ingestion status, enabling better UX for users viewing their ingested repositories
+- The `_to_dict` helper function properly handles both Pydantic models and plain dicts for Firestore serialization with `exclude_none=True`
+- Authentication is properly added to ingestion endpoints, ensuring only authenticated users can trigger repository ingestion
+- Defensive validation for `pr_number` added in `firebase_service.py` and `review_service.py` to catch invalid input early
+- Cleanup of redundant `await request.json()` calls in webhook router that were consuming the request body unnecessarily
+- Authentication requirement added to the `ingest_github_repository` endpoint via `get_current_user` dependency
+- Authentication requirement added to repository deletion endpoints (`delete_repository_by_name` and `delete_repository`)
+- UID validation added to prevent null/undefined authentication issues in ingestion and repository routers
+- PR number validation added to `save_review_run` and `execute_pr_review` to prevent invalid inputs
+- Defensive PR number mismatch check added in `get_latest_review_run` to guard against stale data
+- Firestore operations properly scoped by user UID in repo metadata and PR operations
+
+<details>
+<summary>🔍 Raw agent response (JSON)</summary>
+
+```json
+{
+  "summary": "Found 11 issue(s) (1 critical, 3 high). Review the details below.",
+  "issues": [
+    {
+      "severity": "critical",
+      "category": "bug",
+      "title": "repo_name field in RepoMetadata has no default value and cannot be instantiated",
+      "file": "common/firebase_models.py",
+      "line_start": 70,
+      "line_end": 70,
+      "description": "The `repo_name` field is defined as `repo_name: str = Field(serialization_alias=\"repoName\")` where the string \"repoName\" is incorrectly interpreted by Pydantic as the default value, not as a configuration. This is a required field with no proper default, which contradicts the usage in `api/routers/ingestion.py` line 71 where `RepoMetadata(repo_name=request.repo_name, ...)` expects `repo_name` to be a required parameter. The Field syntax is incorrect - it should be `Field(serialization_alias=\"repoName\")` without the string as a positional arg, or `repo_name: str` without the `= Field(...)` assignment for a required field.",
+      "suggestion": null,
+      "impact": null,
+      "confidence": 10,
+      "ai_fix": "repo_name: str = Field(serialization_alias=\"repoName\")",
+      "status": "new",
+      "fingerprint": "e6349e866d8f"
+    },
+    {
+      "severity": "medium",
+      "category": "bug",
+      "title": "GitHub API field key mismatch for stars and forks",
+      "file": "api/routers/ingestion.py",
+      "line_start": 74,
+      "line_end": 75,
+      "description": "The code uses `gh_meta.get(\"stars\", 0)` and `gh_meta.get(\"forks\", 0)`, but GitHub's API typically returns star count as `stargazers_count` and fork count as `forks_count` (or just `forks`). This will silently default to 0 for most repositories, displaying incorrect metadata.",
+      "suggestion": null,
+      "impact": null,
+      "confidence": 9,
+      "ai_fix": null,
+      "status": "new",
+      "fingerprint": "1772c59a380a"
+    },
+    {
+      "severity": "high",
+      "category": "security",
+      "title": "Missing authorization check for repository deletion",
+      "file": "api/routers/repository.py",
+      "line_start": 152,
+      "line_end": 176,
+      "description": "The `delete_repository_by_name` endpoint authenticates the user but does not verify that the authenticated user owns the repository being deleted. Any authenticated user can delete any repository they know the name of. This is a Broken Access Control vulnerability (CWE-862).",
+      "suggestion": null,
+      "impact": null,
+      "confidence": 10,
+      "ai_fix": null,
+      "status": "new",
+      "fingerprint": "422029da9f09"
+    },
+    {
+      "severity": "high",
+      "category": "security",
+      "title": "Missing authorization check for repository deletion by ID",
+      "file": "api/routers/repository.py",
+      "line_start": 188,
+      "line_end": 215,
+      "description": "Similar to delete_repository_by_name, this endpoint authenticates the user but does not verify ownership of the repository being deleted. The repo_id is taken directly from the path without verifying permissions. This is a Broken Access Control vulnerability (CWE-862).",
+      "suggestion": null,
+      "impact": null,
+      "confidence": 10,
+      "ai_fix": null,
+      "status": "new",
+      "fingerprint": "7198b480e222"
+    },
+    {
+      "severity": "medium",
+      "category": "style",
+      "title": "Unused imports in webhook router",
+      "file": "api/routers/webhook.py",
+      "line_start": 10,
+      "line_end": 10,
+      "description": "`IncrementalPRPayload` and `IncrementalPushPayload` are imported from `common.job_models` but are never used in the visible code within this file. These appear to be dead imports.",
+      "suggestion": null,
+      "impact": null,
+      "confidence": 10,
+      "ai_fix": null,
+      "status": "still_open",
+      "fingerprint": "2887e64115df"
+    },
+    {
+      "severity": "medium",
+      "category": "bug",
+      "title": "Empty string values after splitting malformed repo_id",
+      "file": "api/routers/repository.py",
+      "line_start": 210,
+      "line_end": 210,
+      "description": "After validating that '/' exists in repo_id, the code splits it with `owner, repo_name = repo_id.split(\"/\", 1)`. For inputs like \"/repo\" or \"owner/\", this could result in empty strings being passed to `_cleanup_firestore_repo`, potentially causing unexpected Firestore operations.",
+      "suggestion": null,
+      "impact": null,
+      "confidence": 8,
+      "ai_fix": "owner, repo_name = repo_id.split(\"/\", 1)\nif not owner or not repo_name:\n    raise HTTPException(status_code=400, detail=\"Invalid repo_id format\")",
+      "status": "new",
+      "fingerprint": "7094ceefca1a"
+    },
+    {
+      "severity": "low",
+      "category": "style",
+      "title": "Empty Dashboard component function body",
+      "file": "frontend/app/(protected)/page.tsx",
+      "line_start": 11,
+      "line_end": 13,
+      "description": "The `Dashboard` function has an almost empty body after the diff changes. The previous implementation with state management and JSX was removed but not replaced, leaving dead code that renders nothing.",
+      "suggestion": null,
+      "impact": null,
+      "confidence": 10,
+      "ai_fix": null,
+      "status": "still_open",
+      "fingerprint": "87712aaea33f"
+    },
+    {
+      "severity": "high",
+      "category": "security",
+      "title": "Missing Authorization Check for Repository Deletion by ID",
+      "file": "api/routers/repository.py",
+      "line_start": 185,
+      "line_end": 217,
+      "description": "The `delete_repository` endpoint authenticates users but does not verify ownership of the repository being deleted. The `repo_id` (in 'owner/repo' format) is taken directly from the path without verifying that the authenticated user has permission to delete that repository. Any authenticated user can delete any repository they can identify.",
+      "suggestion": "Implement ownership verification. Parse the owner from repo_id and verify it matches the authenticated user's identity, or implement a proper ACL system for repository access control.",
+      "impact": "Broken Access Control (CWE-862). Authenticated users can delete repositories belonging to other users.",
+      "confidence": 10,
+      "ai_fix": null,
+      "status": "new",
+      "fingerprint": "authz-delete-by-id"
+    },
+    {
+      "severity": "medium",
+      "category": "security",
+      "title": "Sensitive Information in Error Messages",
+      "file": "api/routers/ingestion.py",
+      "line_start": 162,
+      "line_end": 162,
+      "description": "When ingestion fails in dev mode, the raw exception message `str(exc)` is returned in the HTTP response via `HTTPException(status_code=500, detail=str(exc))`. Exception messages from external libraries, the ingestion engine, or database operations may contain sensitive information such as file paths, internal API endpoints, configuration details, or stack traces that could aid attackers in understanding the system internals.",
+      "suggestion": "Return a generic error message to users while logging the detailed exception server-side. For example: `raise HTTPException(status_code=500, detail=\"Ingestion failed. Please try again or contact support.\")`",
+      "impact": "Information disclosure - internal system details may be exposed to end users or logged in client systems.",
+      "confidence": 9,
+      "ai_fix": null,
+      "status": "new",
+      "fingerprint": "sensitive-error-http"
+    },
+    {
+      "severity": "medium",
+      "category": "security",
+      "title": "Sensitive Exception Details Stored in Firestore",
+      "file": "api/routers/ingestion.py",
+      "line_start": 166,
+      "line_end": 175,
+      "description": "When ingestion fails, the raw exception message `str(exc)` is stored in Firestore via `RepoIngestionError(ingestion_status=\"failed\", error_message=str(exc))`. Exception messages may contain sensitive information such as file system paths, database connection strings, API endpoints, or other internal system details. This data may be accessible to other parts of the application or exposed through API responses.",
+      "suggestion": "Sanitize or truncate exception messages before storing. Store only high-level error categories (e.g., 'network_error', 'parse_error') and log full details server-side where access is restricted.",
+      "impact": "Sensitive internal information may be persisted in Firestore and potentially exposed through API endpoints or frontend applications.",
+      "confidence": 9,
+      "ai_fix": null,
+      "status": "new",
+      "fingerprint": "sensitive-error-firestore"
+    },
+    {
+      "severity": "medium",
+      "category": "security",
+      "title": "Potential Empty String Values from String Split",
+      "file": "api/routers/repository.py",
+      "line_start": 208,
+      "line_end": 209,
+      "description": "After validating that '/' exists in repo_id, the code splits it with `owner, repo_name = repo_id.split(\"/\", 1)`. However, inputs like \"/\", \"owner/\", or \"/repo\" would pass the validation but result in empty strings for owner or repo_name. These empty values are then passed to `_cleanup_firestore_repo` and could cause unexpected behavior in Firestore operations.",
+      "suggestion": "Add validation after the split to ensure neither owner nor repo_name is empty: `if not owner or not repo_name: raise HTTPException(status_code=400, detail=\"Invalid repo_id format\")`",
+      "impact": "Could lead to unexpected Firestore operations, potential data corruption, or difficult-to-debug errors.",
+      "confidence": 8,
+      "ai_fix": "        try:\n            owner, repo_name = repo_id.split(\"/\", 1)\n            if not owner or not repo_name:\n                raise HTTPException(\n                    status_code=400,\n                    detail=f\"Invalid repo_id format: {repo_id!r} - both owner and repo name required\",\n                )\n            _cleanup_firestore_repo(uid, owner, repo_name)",
+      "status": "new",
+      "fingerprint": "empty-split-values"
+    }
+  ],
+  "positive_findings": [
+    "The PR successfully refactors Firebase service methods to use typed Pydantic models (FirebaseUserData, FirebaseUserProfile, RepoMetadata, etc.) for better type safety and documentation",
+    "Firestore repo metadata is now properly tracked with ingestion status, enabling better UX for users viewing their ingested repositories",
+    "The `_to_dict` helper function properly handles both Pydantic models and plain dicts for Firestore serialization with `exclude_none=True`",
+    "Authentication is properly added to ingestion endpoints, ensuring only authenticated users can trigger repository ingestion",
+    "Defensive validation for `pr_number` added in `firebase_service.py` and `review_service.py` to catch invalid input early",
+    "Cleanup of redundant `await request.json()` calls in webhook router that were consuming the request body unnecessarily",
+    "Authentication requirement added to the `ingest_github_repository` endpoint via `get_current_user` dependency",
+    "Authentication requirement added to repository deletion endpoints (`delete_repository_by_name` and `delete_repository`)",
+    "UID validation added to prevent null/undefined authentication issues in ingestion and repository routers",
+    "PR number validation added to `save_review_run` and `execute_pr_review` to prevent invalid inputs",
+    "Defensive PR number mismatch check added in `get_latest_review_run` to guard against stale data",
+    "Firestore operations properly scoped by user UID in repo metadata and PR operations"
+  ],
+  "error": null,
+  "files_changed_summary": [
+    {
+      "file": "api/routers/auth.py",
+      "lines_added": 3,
+      "lines_removed": 3,
+      "what_changed": "Modified"
+    },
+    {
+      "file": "api/routers/ingestion.py",
+      "lines_added": 105,
+      "lines_removed": 14,
+      "what_changed": "GitHub API field key mismatch for stars and forks"
+    },
+    {
+      "file": "api/routers/repository.py",
+      "lines_added": 56,
+      "lines_removed": 27,
+      "what_changed": "Missing authorization check for repository deletion"
+    },
+    {
+      "file": "api/routers/webhook.py",
+      "lines_added": 1,
+      "lines_removed": 2,
+      "what_changed": "Unused imports in webhook router"
+    },
+    {
+      "file": "api/services/firebase_service.py",
+      "lines_added": 191,
+      "lines_removed": 68,
+      "what_changed": "Modified"
+    },
+    {
+      "file": "api/services/review_service.py",
+      "lines_added": 22,
+      "lines_removed": 16,
+      "what_changed": "Modified"
+    },
+    {
+      "file": "common/firebase_models.py",
+      "lines_added": 141,
+      "lines_removed": 0,
+      "what_changed": "repo_name field in RepoMetadata has no default value and cannot be instantiated"
+    },
+    {
+      "file": "common/job_models.py",
+      "lines_added": 2,
+      "lines_removed": 1,
+      "what_changed": "Modified"
+    },
+    {
+      "file": "db/queries.py",
+      "lines_added": 24,
+      "lines_removed": 12,
+      "what_changed": "Modified"
+    },
+    {
+      "file": "db/schema.py",
+      "lines_added": 15,
+      "lines_removed": 14,
+      "what_changed": "Modified"
+    },
+    {
+      "file": "frontend/app/(protected)/page.tsx",
+      "lines_added": 1,
+      "lines_removed": 158,
+      "what_changed": "Empty Dashboard component function body"
+    },
+    {
+      "file": "frontend/app/(protected)/repositories/page.tsx",
+      "lines_added": 427,
+      "lines_removed": 320,
+      "what_changed": "Modified"
+    },
+    {
+      "file": "frontend/components/sidebar.tsx",
+      "lines_added": 1,
+      "lines_removed": 1,
+      "what_changed": "Modified"
+    },
+    {
+      "file": "frontend/next.config.ts",
+      "lines_added": 1,
+      "lines_removed": 1,
+      "what_changed": "Modified"
+    },
+    {
+      "file": "frontend/package-lock.json",
+      "lines_added": 78,
+      "lines_removed": 0,
+      "what_changed": "Modified"
+    },
+    {
+      "file": "frontend/package.json",
+      "lines_added": 1,
+      "lines_removed": 0,
+      "what_changed": "Modified"
+    }
+  ]
+}
+```
+
+</details>
+
+---
+
+*🤖 Generated by BugViper | Powered by z-ai/glm-5* this is the Review it did . Is it correct ? how to imrpove ? Also Instead of calling two agents for security and code review . Can we have one only ? also write detailed of what has been changed and also provide detailed instructions for the ai agent to fix the issues I give the format of codetabbit **Actionable comments posted: 6**
+
+> [!CAUTION]
+> Some comments are outside the diff and can’t be posted inline due to platform limitations.
+> 
+> 
+> 
+> <details>
+> <summary>⚠️ Outside diff range comments (4)</summary><blockquote>
+> 
+> <details>
+> <summary>db/queries.py (3)</summary><blockquote>
+> 
+> `942-956`: _⚠️ Potential issue_ | _🟠 Major_
+> 
+> **This definition shadows the first `delete_repository` (Line 79) and uses a weaker deletion strategy.**
+> 
+> `DETACH DELETE r` removes the Repository node and its direct relationships, but does **not** delete child nodes (Files, Classes, etc.) reachable via `[:CONTAINS*]`. This will leave orphaned nodes in the graph after deletion.
+> 
+> If the first definition's traversal-based cleanup is the intended behavior, move it here (or remove this duplicate) and add the connectivity guard from this version.
+> 
+> 
+> <details>
+> <summary>Suggested consolidated version</summary>
+> 
+> ```diff
+>      def delete_repository(self, repo_id: str) -> bool:
+>          """Delete a repository and all its data."""
+>          if not self.db.connected:
+> -            # Mock success for testing
+>              return True
+>  
+>          query = """
+>          MATCH (r:Repository)
+>          WHERE r.id = $repo_id OR r.repo = $repo_id
+> +        OPTIONAL MATCH (r)-[:CONTAINS*]->(n)
+> -        DETACH DELETE r
+> +        DETACH DELETE r, n
+>          RETURN count(r) as deleted_count
+>          """
+>          records, _, _ = self.db.run_query(query, {"repo_id": repo_id})
+> -
+>          return len(records) > 0 and records[0].get("deleted_count", 0) > 0
+> ```
+> </details>
+> 
+> ---
+> 
+> `964-965`: _⚠️ Potential issue_ | _🟡 Minor_
+> 
+> **Inconsistent lookup — `get_repo_overview_extended` still uses `{id: $repo_id}` instead of the `WHERE r.id = $repo_id OR r.repo = $repo_id` pattern.**
+> 
+> This query will fail for repositories where `r.id` doesn't match `repo_id` but `r.repo` does, unlike every other query updated in this PR.
+> 
+> 
+> <details>
+> <summary>Proposed fix</summary>
+> 
+> ```diff
+>          config_query = """
+> -        MATCH (r:Repository {id: $repo_id})-[:HAS_CONFIG]->(cf:ConfigFile)
+> +        MATCH (r:Repository)-[:HAS_CONFIG]->(cf:ConfigFile)
+> +        WHERE r.id = $repo_id OR r.repo = $repo_id
+>          OPTIONAL MATCH (cf)-[:HAS_DEPENDENCY]->(d:Dependency)
+>          RETURN count(DISTINCT cf) as config_count, count(DISTINCT d) as dep_count
+>          """
+> ```
+> </details>
+> 
+> ---
+> 
+> `79-93`: _⚠️ Potential issue_ | _🟠 Major_
+> 
+> **Remove duplicate `delete_repository` method — Line 79 is dead code, shadowed by Line 942.**
+> 
+> The class defines `delete_repository` twice. Python keeps only the second definition (Line 942), so the first (Line 79) never executes.
+> 
+> The implementations differ critically:
+> - **Line 79**: Explicitly traverses `CONTAINS` relationships with `OPTIONAL MATCH (r)-[:CONTAINS*]->(n)`, then deletes both parent and child nodes. Has exception handling with `logger.error()`.
+> - **Line 942**: Only `DETACH DELETE r` without relationship traversal. Includes test mock (`if not self.db.connected: return True`). No exception handling.
+> 
+> Remove the duplicate. If child node cleanup via explicit `CONTAINS` traversal is required, keep Line 79 and remove Line 942. Otherwise, keep Line 942 but verify orphaned nodes won't be left behind.
+> 
+> </blockquote></details>
+> <details>
+> <summary>api/services/firebase_service.py (1)</summary><blockquote>
+> 
+> `336-338`: _⚠️ Potential issue_ | _🟡 Minor_
+> 
+> **Run numbering has a race condition under concurrent reviews.**
+> 
+> `run_number = len(existing) + 1` reads the current count and writes `run_{n}`. If two reviews for the same PR execute concurrently, they'll compute the same `run_number` and one will silently overwrite the other. A Firestore transaction or `add()` with auto-ID would avoid this.
+> 
+> </blockquote></details>
+> 
+> </blockquote></details>
+
+<details>
+<summary>🤖 Fix all issues with AI agents</summary>
+
+```
+In `@api/routers/ingestion.py`:
+- Around line 132-147: The Firestore update calls using
+firebase_service.upsert_repo_metadata (the completion update that constructs a
+RepoIngestionUpdate and the failure-path update) are not wrapped in try/except,
+so Firestore errors can turn a successful ingestion into a 500 or mask the
+original error; wrap each firebase_service.upsert_repo_metadata call in a
+try/except, log the exception with context (e.g., processLogger.error or
+similar) and continue without re-raising on the completion path, and on the
+failure path catch and log the Firestore exception but re-raise or preserve the
+original ingestion exception so it isn't overwritten; locate the calls
+constructing RepoIngestionUpdate in the ingestion handler and apply the same
+error-handling pattern used for the initial Firestore write.
+
+In `@api/routers/repository.py`:
+- Line 164: The call sites in delete_repository (and the similar call later)
+directly index user["uid"] which can raise KeyError; change them to use
+user.get("uid") and add the same 401 guard used in api/routers/ingestion.py so
+we return/raise a 401 when uid is missing before calling
+_cleanup_firestore_repo(username, repo_name); update references in
+delete_repository and the other occurrence to use the guarded uid variable when
+invoking _cleanup_firestore_repo.
+- Around line 189-192: The current branch silently skips Firestore cleanup when
+repo_id lacks a "/" (so _cleanup_firestore_repo isn't called), causing leftover
+docs; update the code that parses repo_id in the router (the block that checks
+if "/" in repo_id) to handle the no-separator case by either enforcing the
+owner/repo format (returning a 4xx error) or calling _cleanup_firestore_repo
+with an appropriate fallback (e.g., treat repo_id as repo_name with a missing
+owner) and add a processLogger.warn or similar message when repo_id is
+malformed; ensure the change references repo_id and _cleanup_firestore_repo so
+cleanup always runs or the request fails with a clear warning.
+
+In `@api/services/firebase_service.py`:
+- Around line 93-100: The FirebaseUserProfile returned by create_or_update_user,
+ensure_user, and get_user uses snake_case fields which breaks unpacking into
+UserProfile (which expects camelCase); fix by either changing the call sites in
+api/routers/auth.py where they do UserProfile(**profile) to use the model's
+serialized aliases UserProfile(**profile.model_dump(by_alias=True)), or
+alternatively add populate_by_name=True to the UserProfile pydantic/typing
+config so it accepts both snake_case and camelCase names—apply one of these
+fixes consistently for all usages of FirebaseUserProfile (create_or_update_user,
+ensure_user, get_user).
+
+In `@db/schema.py`:
+- Line 335: The Cypher query alias is misleading: change the alias in the query
+that contains "count(DISTINCT i) as modules" to "as imports" (so it correctly
+reflects that i are Import nodes), and update any code that consumes this query
+result to read "imports" instead of "modules" (or add a small mapping where the
+result is assembled). Look for the query string in db/schema.py that contains
+"count(DISTINCT i) as modules" and align its alias with get_repo_stats' naming
+(import_count/imports) and adjust callers accordingly.
+
+In `@frontend/app/`(protected)/repositories/page.tsx:
+- Around line 351-358: The delete icon button lacks an accessible label; update
+the button (the element that calls setDeleteTarget(repo.id ??
+`${repoOwner}/${repoNameVal}`)) to include an aria-label (e.g.,
+aria-label="Delete repository") or add visually-hidden text inside the button so
+screen readers can identify the action; ensure the label describes the repo
+deletion action and remains localized if needed.
+```
+
+</details>
+
+<details>
+<summary>🧹 Nitpick comments (8)</summary><blockquote>
+
+<details>
+<summary>db/queries.py (2)</summary><blockquote>
+
+`91-92`: **Use `logger.exception` to preserve the traceback.**
+
+`logger.error` loses the stack trace. `logger.exception` automatically attaches `exc_info` inside an `except` block.
+
+
+<details>
+<summary>Proposed fix</summary>
+
+```diff
+         except Exception as e:
+-            logger.error("Error deleting repository %s: %s", repo_id, e)
++            logger.exception("Error deleting repository %s", repo_id)
+             return False
+```
+</details>
+
+---
+
+`680-680`: **Replace `print` with `logger.warning` for consistency with the logging refactor.**
+
+The rest of this PR migrated from `print` to `logger`, but this line was missed.
+
+
+<details>
+<summary>Proposed fix</summary>
+
+```diff
+-            print(f"⚠️  Warning: File {records[0].get('path')} has no source_code stored")
++            logger.warning("File %s has no source_code stored", records[0].get('path'))
+```
+</details>
+
+</blockquote></details>
+<details>
+<summary>db/schema.py (1)</summary><blockquote>
+
+`338-355`: **Past review fixes applied correctly; note: variable count is absent here unlike `get_graph_stats`.**
+
+The `collect(DISTINCT f)` + `UNWIND` pattern, corrected relationship types, `sum` without `DISTINCT`, and language filtering all look good.
+
+However, `get_graph_stats` counts variables via `(f)-[:DEFINES]->(v:Variable)`, but `get_repo_stats` omits it entirely. If consumers expect a `variable_count` field from repo stats, this will be a gap.
+
+</blockquote></details>
+<details>
+<summary>frontend/app/(protected)/repositories/page.tsx (2)</summary><blockquote>
+
+`159-178`: **Multiple simultaneous completions trigger redundant `loadRepositories()` calls.**
+
+When the poll loop iterates over several active jobs and more than one has just completed, `loadRepositories()` is invoked once per completed job in the same loop iteration. Consider collecting completions and calling `loadRepositories()` once after the loop.
+
+<details>
+<summary>♻️ Sketch</summary>
+
+```diff
+     async function poll() {
+       const jobs = Object.values(ingestingJobsRef.current).filter(
+         (j) => !["completed", "failed"].includes(j.status)
+       );
++      let shouldReload = false;
+       for (const job of jobs) {
+         try {
+           const res = await getIngestionJobStatus(job.jobId);
+           const next = res.status;
+
+           setIngestingJobs((prev) => {
+             if (!prev[job.repo.full_name]) return prev;
+             return { ...prev, [job.repo.full_name]: { ...prev[job.repo.full_name], status: next } };
+           });
+
+           if (next === "completed") {
+             toast.success(`${job.repo.full_name} synced successfully`);
+-            loadRepositories();
++            shouldReload = true;
+             setTimeout(() => {
+               setIngestingJobs((prev) => {
+                 const copy = { ...prev };
+                 delete copy[job.repo.full_name];
+                 return copy;
+               });
+             }, 3000);
+           } else if (next === "failed") {
+             toast.error(`Sync failed for ${job.repo.full_name}`);
+           }
+         } catch {
+           // silent
+         }
+       }
++      if (shouldReload) loadRepositories();
+     }
+```
+</details>
+
+---
+
+`134-134`: **`loadRepositories` is not listed in the `useEffect` dependency array.**
+
+This is a common pattern for "run once on mount," but note that in React 19 strict mode (even though it's disabled for now), this effect will fire twice. If strict mode is ever re-enabled, you'd get a double-fetch. Consider wrapping `loadRepositories` in `useCallback` or using a ref guard if that matters.
+
+</blockquote></details>
+<details>
+<summary>common/firebase_models.py (2)</summary><blockquote>
+
+`11-13`: **`_fb` helper is defined but never used.**
+
+All fields in this file use `Field(…, serialization_alias=…)` directly. Consider removing `_fb` or actually using it to reduce repetition.
+
+---
+
+`18-30`: **`github_access_token` is stored in plaintext in Firestore.**
+
+`FirebaseUserData` persists the GitHub OAuth token as a plain string in the `users/{uid}` document. If Firestore security rules or IAM policies are misconfigured, this token could be exposed. Consider whether encrypting at rest (application-level) or using a secrets manager would be appropriate for your threat model.
+
+</blockquote></details>
+<details>
+<summary>api/services/firebase_service.py (1)</summary><blockquote>
+
+`224-239`: **`delete_repo_metadata` performs unbounded serial deletes — may time out for large repos.**
+
+The nested loop streams all PRs and all reviews per PR, issuing individual deletes. For repos with hundreds of PRs, this could exceed request timeouts or Firestore rate limits. Consider batching deletes using Firestore's `batch` or `BulkWriter` API for better throughput.
+
+</blockquote></details>
+
+</blockquote></details>
+
+<!-- This is an auto-generated comment by CodeRabbit for review status -->. DO in line comments with code as well .
+
+---
+
+{
+  "summary": "No significant issues found. The code looks good.",
+  "issues": [],
+  "positive_findings": [],
+  "walk_through": [
+    ".gitignore — Adds 'output' directory to gitignore",
+    "api/routers/repository.py — Removes docstring comment block",
+    "api/services/review_service.py — Refactors context building, adds file snapshot fetching, and simplifies agent context assembly",
+    "api/utils/comment_formatter.py — Rewrites comment formatting with CodeRabbit-style output and collapsible sections",
+    "api/utils/graph_context.py — Enhances graph context section with callers, dependencies, imports, and class hierarchy",
+    "db/queries.py — Updates get_diff_context_enhanced to handle Method nodes and comprehensive relationship queries"
+  ],
+  "error": null,
+  "files_changed_summary": [
+    {
+      "file": ".gitignore",
+      "lines_added": 1,
+      "lines_removed": 0,
+      "what_changed": "Modified"
+    },
+    {
+      "file": "api/routers/repository.py",
+      "lines_added": 0,
+      "lines_removed": 3,
+      "what_changed": "Modified"
+    },
+    {
+      "file": "api/services/review_service.py",
+      "lines_added": 130,
+      "lines_removed": 215,
+      "what_changed": "Modified"
+    },
+    {
+      "file": "api/utils/comment_formatter.py",
+      "lines_added": 192,
+      "lines_removed": 50,
+      "what_changed": "Modified"
+    },
+    {
+      "file": "api/utils/graph_context.py",
+      "lines_added": 118,
+      "lines_removed": 51,
+      "what_changed": "Modified"
+    },
+    {
+      "file": "db/queries.py",
+      "lines_added": 136,
+      "lines_removed": 111,
+      "what_changed": "Modified"
+    },
+    {
+      "file": "deepagent/agent/review_pipeline.py",
+      "lines_added": 35,
+      "lines_removed": 47,
+      "what_changed": "Modified"
+    },
+    {
+      "file": "deepagent/models/agent_schemas.py",
+      "lines_added": 46,
+      "lines_removed": 2,
+      "what_changed": "Modified"
+    },
+    {
+      "file": "deepagent/prompts.py",
+      "lines_added": 65,
+      "lines_removed": 53,
+      "what_changed": "Modified"
+    }
+  ]
+}
+
+---
+
+Even the positive findings are empty
+
+---
+
+Coderabbit still found issues Verify each finding against the current code and only fix it if needed.
+
+Inline comments:
+In `@api/services/review_service.py`:
+- Line 608: Two string literals were mistakenly written as f-strings without
+placeholders (Ruff F541); remove the unnecessary f-prefix on the f"# Step 6 —
+Agent Context (graph + imports + callers)" occurrence and the other similar
+f-quoted step string so they become regular string literals. Locate these in
+review_service.py (search for the exact step text) and change f"..." to "..."
+for both places to satisfy the linter.
+
+In `@api/utils/comment_formatter.py`:
+- Line 251: The appended string in parts.append (the line building "*🤖
+Generated by [BugViper]...Powered by {config.review_model}*") exceeds the
+100-char limit; break the long literal into multiple shorter
+concatenated/implicit-string segments or build it with parentheses to keep each
+physical line under 100 chars (or call parts.append twice), ensuring you still
+insert config.review_model and preserve the exact output format; update the
+parts.append usage in comment_formatter.py accordingly.
+
+In `@db/queries.py`:
+- Around line 1462-1481: The caller_query currently matches targets only by name
+(caller_query / target.name = $name) and so returns callers across all repos;
+modify caller_query to also scope the target by path (e.g., add a condition like
+target.path CONTAINS $repo_id or use coalesce(target.path, target_file.path)
+CONTAINS $repo_id) so it only matches symbols in the current repository
+(consistent with get_diff_context and get_diff_context_condensed), and update
+the parameters passed to self.db.run_query (replace {"name": sym["name"]} with
+something including repo_id, e.g., {"name": sym["name"], "repo_id":
+repo_id_or_sym_value}) so the new $repo_id parameter is available to the query.
+- Around line 1415-1416: get_diff_context_enhanced is matching File nodes by
+f.path with a repo-relative $file_path which yields zero results; update the
+Cypher WHERE clauses inside the affected_query (and the second occurrence later
+in the same function) to use WHERE f.relative_path = $file_path AND f.path
+CONTAINS $repo_id (mirroring get_diff_context/get_diff_context_condensed) so
+repo-relative paths match the stored relative_path and repo id.
+
+In `@deepagent/agent/review_pipeline.py`:
+- Around line 66-71: The current broad except around reviewer.run swallows
+infra/LLM failures and replaces findings with an empty AgentFindings; narrow the
+catch to specific LLM/client errors (e.g., the SDK's AuthenticationError,
+RateLimitError, APIError, NetworkError) instead of Exception, and when one of
+those occurs populate/return a ReviewResults.error (or re-raise) rather than
+silently using empty AgentFindings; also replace logger.error(..., exc_info=exc)
+with logger.exception(...) to follow TRY400 and include the stack trace. Locate
+the handling around reviewer.run and AgentFindings in review_pipeline.py and
+update the exception types and error propagation accordingly.
+
+---
+
+Outside diff comments:
+In `@api/services/review_service.py`:
+- Around line 215-217: Remove the stray debug print statements that output
+added_source and replace them with logger.debug calls (or remove entirely)
+inside the same function (e.g., the method in review_service.py that contains
+the prints); use the module/class logger (or self.logger) to log the same
+information with a clear message like "Added source for diff:" and the
+added_source variable, and ensure the logger is imported/initialized if missing
+so no stdout prints remain in production.
+
+---
+
+Nitpick comments:
+In `@api/services/review_service.py`:
+- Around line 326-344: The assembled prompt in _build_review_prompt can exceed
+model context limits because it blindly concatenates agent_context and
+full_file_snapshots; modify _build_review_prompt to enforce a total size cap
+(e.g., MAX_PROMPT_CHARS or MAX_PROMPT_TOKENS) by always preserving agent_context
+and trimming the snapshots_section first: compute remaining budget after
+agent_context and header, then iterate full_file_snapshots (referencing
+full_file_snapshots, snapshots_section) adding each file's content until the
+budget is exhausted, and when trimming include a clear placeholder/summary like
+"…(N files omitted or truncated)…" so reviewers/LLM know content was shortened;
+keep repo_id and pr_number usage unchanged.
+- Around line 309-323: The current _parse_files_changed populates what_changed
+from file_to_issue_title (built from issues), which is semantically wrong;
+change it to derive per-file descriptions from the walkthrough or diff hunk
+headers instead. Locate _parse_files_changed and replace the file_to_issue_title
+mapping logic with a map built from available walkthrough entries (e.g., take
+the first walkthrough.summary or walkthrough.entry for each issue.file) or, if
+walkthroughs are not present, extract the first hunk header from the diff data
+for each file; then set FileSummary.what_changed to that derived description
+(and keep the "Modified" fallback). Ensure you update any variable names (remove
+file_to_issue_title) and use the unique symbols _parse_files_changed, issues,
+walkthroughs/diff hunk extraction, FileSummary, and file_stats to find and
+modify the code.
+- Around line 636-655: The current file snapshot loop in review_service.py (the
+full_file_snapshots block using gh.get_pr_head_ref and gh.get_file_content over
+files_changed) enforces only a per-file 300-line cap but not an aggregate size
+cap and also should use safe zipping; fix by imposing a configurable global
+snapshot limit (e.g., max total lines or max total characters) while iterating
+file_contents and stop collecting once the aggregate limit is reached, still
+preferring smaller files first or preserving original order; update the
+zip(files_changed, file_contents) call to zip(files_changed, file_contents,
+strict=True) for defensive checking; ensure logger.info reports the aggregate
+size (lines/bytes) collected and handle early termination without raising.
+
+In `@api/utils/comment_formatter.py`:
+- Around line 237-246: The embedded raw_agent_json (from
+ReviewResults.model_dump_json(indent=2)) can exceed GitHub's 65,536-char limit
+and break post_comment; modify the comment-builder where raw_agent_json is
+appended (the block that calls parts.append("```json") and
+parts.append(raw_agent_json)) to instead compute a display_json and truncated
+flag: if len(raw_agent_json) > MAX_COMMENT_LENGTH (or remaining allowed size),
+slice/truncate raw_agent_json to a safe length, set truncated=True, append
+display_json via parts.append(display_json), and if truncated append a clear
+notice like "# ... (truncated)" before closing the code fence; ensure the total
+payload stays below the API limit before calling post_comment.
+
+In `@api/utils/graph_context.py`:
+- Line 4: Update the bare dict annotation in the function signature of
+build_graph_context_section to use a typed mapping (e.g., change graph_context:
+dict to graph_context: dict[str, Any]) and add the required import (Any) from
+typing at the top of the module; ensure any other references to a bare dict in
+this file follow the same pattern for consistency.
+- Around line 40-42: Replace hardcoded "```python" code fences in the places
+that append source snippets (the parts.append("```python") calls that wrap
+variables like source and import text and use file_path) with a language hint
+derived from the file extension: add a module-level _EXT_TO_LANG_HINT mapping
+and _lang_hint(file_path) helper (use pathlib.Path(file_path).suffix.lower())
+and then change the inserts to parts.append(f"```{_lang_hint(file_path)}") so
+the fenced code block language matches the file extension; update all
+occurrences that currently use "```python" (the snippets that append source,
+method source, and import source) to call _lang_hint with the existing file_path
+variable.
+
+In `@db/queries.py`:
+- Around line 1489-1490: Replace the broad "except Exception" handlers in the
+callers lookup block (and the similar handlers at the other occurrences) with a
+narrow tuple of Neo4j-specific exceptions so programming errors still surface;
+import the relevant exceptions from neo4j.exceptions (e.g., ServiceUnavailable,
+SessionExpired, CypherSyntaxError, DatabaseError or the specific ones your
+driver exposes) and change the except to "except (ServiceUnavailable,
+SessionExpired, CypherSyntaxError, DatabaseError) as e" around the code that
+runs the Cypher query (the block surrounding the logger.warning for Error
+finding callers for {sym['name']} and the analogous blocks at the other two
+locations).
+- Around line 1525-1548: The code intentionally mutates the existing symbol dict
+by assigning sym["methods"] = methods_list which alters the object already
+stored in all_affected; add a short inline comment immediately before that
+assignment (near the sym["methods"] = methods_list line) explaining that this
+enriches the previously appended symbol in all_affected (e.g., "# enrich the
+symbol already in all_affected by attaching full method info") so future readers
+understand the in-place mutation is intentional; keep the comment concise and
+place it next to the sym, methods_list, and all_affected references.
+
+In `@deepagent/agent/review_pipeline.py`:
+- Line 13: The import statement "from pydantic_ai.settings import ModelSettings"
+in review_pipeline.py has an unnecessary noqa directive; remove the trailing " 
+# noqa: E402" from that line so the import reads simply "from
+pydantic_ai.settings import ModelSettings" (no other changes), ensuring the file
+no longer contains the unused noqa suppressor.
+
+In `@deepagent/models/agent_schemas.py`:
+- Around line 29-37: The confidence Field on the Pydantic schema currently
+allows out-of-range integers; add validation to enforce 0–10 (e.g., use
+Field(..., ge=0, le=10) or replace the int type with conint(ge=0, le=10)) so the
+model-level attribute `confidence` (in the agent schema class where `confidence:
+int = Field(default=8, ...)`) cannot be set to values like -1 or 15; update the
+Field declaration for `confidence` to include ge=0 and le=10 (or switch to
+conint) and keep the same default/description.
+- Around line 22-45: Several Field description strings in agent_schemas.py use
+EN DASH (–) characters instead of ASCII hyphen-minus (-), which will trigger
+Ruff RUF001; update the description literals for the code_snippet, confidence,
+and ai_fix Field declarations to replace every en dash (U+2013) with a normal
+hyphen-minus (U+002D) so the strings read with "-" for ranges and list
+punctuation; locate the Field definitions by the identifiers code_snippet,
+confidence, and ai_fix and edit their description values accordingly, then run
+the linter to confirm the RUF001 warning is resolved.
+
+In `@deepagent/prompts.py`:
+- Around line 62-64: The prompt text contains EN DASH characters (U+2013) that
+trigger Ruff RUF001; locate the offending string literals (e.g., the multi-line
+prompt sections mentioning "code_snippet" and "ai_fix" and any other prompt
+constants in deepagent/prompts.py) and replace each EN DASH (–) with a normal
+hyphen-minus (-). Update the string values where the tokens "code_snippet" and
+"ai_fix" appear (and any similar list items) so all list markers and ranges use
+'-' instead of '–', then run the linter to confirm RUF001 is resolved.
+
+---
+
+what is this "Outside diff" issues can't be caught
+
+  The debug print statements were already in the file before this PR. BugViper's diff only showed the changed lines
+  around them — the prints weren't in the + lines so the agent correctly ignored them per rule #9 in the prompt.
+
+  The fix — add a Ruff pre-pass before the LLM call and inject its output into the review context:
+
+  # In review_service.py, before run_review():
+  ruff_output = subprocess.run(
+      ["ruff", "check", "--output-format=json", *files_changed],
+      capture_output=True, text=True
+  ).stdout
+  # Append ruff_output to agent_context
+
+  That would cover F541, E501, RUF001, TRY400 automatically without asking the LLM to spot them.
+?
