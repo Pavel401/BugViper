@@ -19,6 +19,30 @@ class Issue(BaseModel):
     description: str = Field(description="Detailed description of the issue")
     suggestion: str | None = Field(default=None, description="Suggested fix (optional)")
     impact: str | None = Field(default=None, description="Impact assessment (optional)")
+    code_snippet: str | None = Field(
+        default=None,
+        description=(
+            "The exact problematic lines from the diff (2–6 lines max), "
+            "verbatim as they appear in the `+` lines. Used for inline display."
+        ),
+    )
+    confidence: int = Field(
+        default=8,
+        description=(
+            "Self-assessed confidence 0–10. "
+            "10 = provable from diff lines alone. "
+            "7–9 = strong signal, some context assumed. "
+            "<7 = needs full file to confirm — do not include."
+        ),
+    )
+    ai_fix: str | None = Field(
+        default=None,
+        description=(
+            "Unified diff patch showing the fix. Use `-` prefix for removed lines "
+            "and `+` prefix for added lines. Keep it minimal — only the changed lines "
+            "plus 1–2 lines of context. Only populate when the fix is unambiguous."
+        ),
+    )
     # Populated post-reconciliation (not by the LLM)
     status: Literal["new", "still_open", "fixed"] = Field(default="new")
     fingerprint: str = Field(default="")
@@ -43,10 +67,26 @@ class ReconciledReview(BaseModel):
 
 
 class AgentFindings(BaseModel):
-    """Structured output from each specialist agent."""
+    """Structured output from the reviewer agent."""
 
+    walk_through: list[str] = Field(
+        default_factory=list,
+        description=(
+            "One entry per changed file, formatted as 'filename — one-sentence summary of what changed'. "
+            "Focus on the intent of the change, not just 'Modified'."
+        ),
+    )
     issues: list[Issue] = Field(default_factory=list)
     positive_findings: list[str] = Field(default_factory=list)
+
+
+class FileSummary(BaseModel):
+    """Summary of changes in a single file."""
+
+    file: str
+    lines_added: int
+    lines_removed: int
+    what_changed: str  # one-sentence description
 
 
 class ReviewResults(BaseModel):
@@ -57,7 +97,11 @@ class ReviewResults(BaseModel):
     positive_findings: list[str] = Field(
         default_factory=list, description="Positive aspects of the code"
     )
+    walk_through: list[str] = Field(
+        default_factory=list, description="Per-file change summaries from the agent"
+    )
     error: str | None = Field(default=None, description="Error message if review failed")
+    files_changed_summary: list[FileSummary] = Field(default_factory=list)
 
 
 class ContextData(BaseModel):

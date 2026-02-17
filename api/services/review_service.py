@@ -10,6 +10,7 @@ Orchestrates the full review pipeline:
   6. Build context → run LLM agents → post comment
 """
 
+import asyncio
 import importlib
 import logging
 import os
@@ -24,7 +25,7 @@ from api.services.firebase_service import firebase_service
 from common.firebase_models import PRMetadata, ReviewRunData
 from db.client import Neo4jClient
 from db.queries import CodeQueryService
-from deepagent.models.agent_schemas import ContextData, Issue, ReconciledReview
+from deepagent.models.agent_schemas import ContextData, FileSummary, Issue, ReconciledReview
 from deepagent.agent.review_pipeline import run_review
 from common.github_client import GitHubClient
 from common.diff_parser import parse_unified_diff
@@ -250,135 +251,25 @@ def extract_symbols_from_diff(diff_text: str) -> Tuple[Set[str], Set[str]]:
 
 
 # ==========================================================================
-# Graph-based resolution
-# ==========================================================================
-
-def _resolve_imports_from_graph(
-    neo4j_client: Neo4jClient, imports: List[Dict], repo_id: str,
-) -> List[Dict]:
-    """
-    For each imported name, search the Neo4j graph for its definition.
-
-    Queries directly with repo filtering (WHERE n.repo = $repo) so results
-    are scoped to the PR's repository. Searches Function, Class, and Variable
-    nodes by exact name match.
-
-    Returns a list of resolved import dicts with source code from the graph.
-    """
-    resolved = []
-    seen = set()  # avoid looking up the same name twice
-
-    with neo4j_client.driver.session() as session:
-        for imp in imports:
-            name = imp.get("name", "")
-
-            # Skip empty, already-seen, or wildcard imports
-            if not name or name in seen or name == "*":
-                continue
-            seen.add(name)
-
-            # full_import_name for Python ("app.services.foo.bar"),
-            # source for JS/TS ("react", "./utils")
-            module = imp.get("full_import_name", imp.get("source", ""))
-
-            try:
-                # Search for the symbol in the graph, scoped to this repo
-                result = session.run("""
-                    MATCH (n)
-                    WHERE (n:Function OR n:Class OR n:Variable)
-                      AND n.name = $name
-                      AND n.repo = $repo
-                    RETURN n.name AS name, n.path AS path,
-                           n.line_number AS line_number,
-                           n.source AS source, n.docstring AS docstring,
-                           labels(n) AS labels
-                    LIMIT 1
-                """, name=name, repo=repo_id)
-
-                records = result.data()
-                if not records:
-                    continue  # symbol not in graph (external dep or not ingested)
-
-                r = records[0]
-                labels = r.get("labels", [])
-                node_type = "class" if "Class" in labels else "function"
-
-                resolved.append({
-                    "name": name,
-                    "module": module,
-                    "type": node_type,
-                    "source": r.get("source", ""),
-                    "path": r.get("path", ""),
-                    "line": r.get("line_number"),
-                    "docstring": r.get("docstring", ""),
-                })
-            except Exception as e:
-                logger.warning(f"Failed to resolve import {name}: {e}")
-
-    return resolved
-
-
-def _find_callers(code_finder, symbol_names: Set[str]) -> List[Dict]:
-    """
-    For each changed symbol, find functions that call it (impact analysis).
-
-    Uses CodeFinder.who_calls_function which queries CALLS relationships
-    in the graph.  Returns at most 10 callers per symbol.
-    """
-    callers = []
-
-    for name in symbol_names:
-        try:
-            results = code_finder.who_calls_function(name)
-            if not results:
-                continue
-
-            # Extract caller info, limit to 10 per symbol
-            caller_list = [
-                {
-                    "name": c.get("caller_function"),
-                    "path": c.get("caller_file_path"),
-                    "line": c.get("caller_line_number"),
-                }
-                for c in results
-                if c.get("caller_function")
-            ][:10]
-
-            if caller_list:
-                callers.append({"symbol": name, "callers": caller_list})
-        except Exception as e:
-            logger.warning(f"Failed to find callers for {name}: {e}")
-
-    return callers
-
-
-# ==========================================================================
 # Context formatting (for LLM agents)
 # ==========================================================================
 
-def _build_agent_context(
-    diff_text: str,
-    import_context: List[Dict],
-    caller_context: List[Dict],
-    graph_section: str,
-) -> str:
+def _build_agent_context(diff_text: str, graph_section: str) -> str:
     """
-    Build the markdown context string that gets sent to the LLM review agents.
+    Build the markdown context string sent to LLM agents.
 
-    Context is structured in order of importance:
-      0. The actual diff (what's changing) - MOST CRITICAL
-      1. Graph context (symbols in changed line ranges) - DEDUPED
-      2. Impact analysis (who calls the changed code)
-      3. Resolved import source code from the graph
+    The graph section already contains affected symbol source, callers,
+    outbound dependencies, imports, and class hierarchy — all fetched in
+    one query by get_diff_context_enhanced.  We just prefix it with the
+    diff so the agent sees exactly what changed before reading the context.
     """
     parts = []
 
-    # Section 0: THE DIFF (what's actually changing)
+    # Section 0: THE DIFF (what's changing)
     parts.append("## Code Changes (Diff)")
     parts.append("*This is what the PR modifies:*")
     parts.append("")
     parts.append("```diff")
-    # Limit diff to reasonable size (50K chars max)
     if len(diff_text) > 50000:
         parts.append(diff_text[:50000])
         parts.append("# ... (diff truncated - very large PR)")
@@ -389,43 +280,68 @@ def _build_agent_context(
     parts.append("---")
     parts.append("")
 
-    # Section 1: Graph context (symbols overlapping changed lines)
+    # Section 1: Full graph context (affected symbols, callers, imports, deps, hierarchy)
     if graph_section and graph_section != "No graph context available.":
-        parts.append("## Code Being Modified (Full Context)")
+        parts.append("## Repository Context (from dependency graph)")
         parts.append(graph_section)
         parts.append("")
 
-    # Section 2: Impact Analysis (who calls the changed code)
-    if caller_context:
-        parts.append("## Impact Analysis (Downstream Dependencies)")
-        total_callers = sum(len(entry["callers"]) for entry in caller_context)
-        parts.append(f"*{total_callers} callers found across {len(caller_context)} modified symbols*")
-        parts.append("")
-        for entry in caller_context:
-            parts.append(f"### `{entry['symbol']}` is called by:")
-            for c in entry["callers"]:
-                parts.append(f"- `{c['name']}()` in [{c.get('path', '?')}](line {c.get('line', '?')})")
-        parts.append("")
-
-    # Section 3: Source code of imported dependencies
-    if import_context:
-        parts.append("## Imported Dependencies (Upstream)")
-        parts.append(f"*{len(import_context)} imports resolved from graph*")
-        parts.append("")
-        for imp in import_context:
-            source = imp.get("source", "")
-            if source:
-                parts.append(f"### `{imp['name']}` from `{imp['module']}`")
-                parts.append(f"*Path: {imp.get('path', 'n/a')} | Type: {imp.get('type', 'unknown')}*")
-                parts.append("")
-                # Truncate very long sources
-                if len(source) > 3000:
-                    source = source[:3000] + "\n# ... (truncated for brevity)"
-                parts.append(f"```python\n{source}\n```")
-                parts.append("")
-        parts.append("")
-
     return "\n".join(parts) if parts else "No additional context available."
+
+
+def _parse_files_changed(diff_text: str, issues: list[Issue]) -> list[FileSummary]:
+    """Derive FileSummary list mechanically from diff line counts."""
+    file_stats: Dict[str, tuple[int, int]] = {}
+    current_file: str | None = None
+
+    for line in diff_text.splitlines():
+        if line.startswith("+++ b/"):
+            current_file = line[6:]
+            if current_file not in file_stats:
+                file_stats[current_file] = (0, 0)
+        elif current_file and line.startswith("+") and not line.startswith("+++"):
+            added, removed = file_stats[current_file]
+            file_stats[current_file] = (added + 1, removed)
+        elif current_file and line.startswith("-") and not line.startswith("---"):
+            added, removed = file_stats[current_file]
+            file_stats[current_file] = (added, removed + 1)
+
+    # Use the first issue title per file as a one-sentence "what changed" description
+    file_to_issue_title: Dict[str, str] = {}
+    for issue in issues:
+        if issue.file not in file_to_issue_title:
+            file_to_issue_title[issue.file] = issue.title
+
+    return [
+        FileSummary(
+            file=file_path,
+            lines_added=added,
+            lines_removed=removed,
+            what_changed=file_to_issue_title.get(file_path, "Modified"),
+        )
+        for file_path, (added, removed) in file_stats.items()
+    ]
+
+
+def _build_review_prompt(
+    agent_context: str,
+    full_file_snapshots: Dict[str, str],
+    repo_id: str,
+    pr_number: int,
+) -> str:
+    """Assemble the final prompt string that is sent verbatim to the LLM agents."""
+    snapshots_section = ""
+    if full_file_snapshots:
+        parts = ["\n\n### Full File Snapshots (post-PR state)\n"]
+        for path, content in full_file_snapshots.items():
+            parts.append(f"#### `{path}`\n```\n{content}\n```\n")
+        snapshots_section = "".join(parts)
+
+    return (
+        f"## PR #{pr_number} in {repo_id}\n\n"
+        f"{agent_context}"
+        f"{snapshots_section}"
+    )
 
 
 # ==========================================================================
@@ -635,75 +551,37 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int) -> None:
             database=os.environ.get("NEO4J_DATABASE", "neo4j"),
         )
         query_service = CodeQueryService(neo4j)
-        from api.services.code_search import CodeFinder
-        code_finder = CodeFinder(neo4j)
 
-        # 4a. Graph symbols overlapping the changed line ranges
+        # Single comprehensive graph query: affected symbols (with full source),
+        # callers, outbound dependencies, imports, and class hierarchy.
         graph_context = query_service.get_diff_context_enhanced(repo_id, changes)
         graph_symbols = graph_context.get("affected_symbols", [])
         graph_section = build_graph_context_section(graph_context)
 
-        _write_step(review_dir, "04a_graph_symbols.md", "\n".join([
-            f"# Step 4a — Graph Symbols (overlapping changed lines)",
+        total_callers = sum(
+            len(entry.get("callers", [])) for entry in graph_context.get("callers", [])
+        )
+        logger.info(
+            f"Graph context: {len(graph_symbols)} affected symbols, "
+            f"{total_callers} callers, "
+            f"{graph_context.get('total_imports', 0)} imports"
+        )
+
+        _write_step(review_dir, "04_graph_context.md", "\n".join([
+            "# Step 4 — Graph Context",
             "",
-            f"## Affected Symbols ({len(graph_symbols)})",
-            *[
-                f"- `{s.get('name', '')}` ({s.get('type', 'unknown')}) "
-                f"in `{s.get('file_path', '')}`"
-                for s in graph_symbols
-            ],
+            f"**Affected symbols:** {len(graph_symbols)}",
+            f"**Callers:** {total_callers}",
+            f"**Imports resolved:** {graph_context.get('total_imports', 0)}",
+            f"**Dependencies:** {len(graph_context.get('dependencies', []))}",
+            f"**Class hierarchy entries:** {len(graph_context.get('class_hierarchy', []))}",
             "",
-            "## Graph Context Section (for agents)",
+            "## Rendered section (sent to agents)",
             graph_section,
         ]))
 
-        # 4b. Look up each imported name in the graph (scoped to this repo)
-        resolved_imports = _resolve_imports_from_graph(neo4j, diff_imports, repo_id)
-        logger.info(f"Resolved {len(resolved_imports)}/{len(diff_imports)} imports from graph")
-
-        _write_step(review_dir, "04b_resolved_imports.md", "\n".join([
-            f"# Step 4b — Resolved Imports from Graph",
-            f"**Resolved:** {len(resolved_imports)} / {len(diff_imports)}",
-            "",
-            *[
-                "\n".join([
-                    f"## `{imp['name']}` from `{imp['module']}`",
-                    f"- **Path:** `{imp.get('path', 'n/a')}`",
-                    f"- **Type:** {imp.get('type', 'n/a')}",
-                    f"- **Line:** {imp.get('line', 'n/a')}",
-                    f"- **Docstring:** {imp.get('docstring', '') or '_none_'}",
-                    "",
-                    "```python",
-                    imp.get("source", "") or "# source not available",
-                    "```",
-                ])
-                for imp in resolved_imports
-            ],
-        ]))
-
-        # 4c. Find callers of changed functions (impact analysis)
-        all_symbol_names = all_diff_symbols | {s.get("name", "") for s in graph_symbols}
-        caller_context = _find_callers(code_finder, all_symbol_names)
-        total_callers = sum(len(c["callers"]) for c in caller_context)
-        logger.info(f"Found {total_callers} callers across {len(caller_context)} symbols")
-
-        _write_step(review_dir, "04c_caller_context.md", "\n".join([
-            f"# Step 4c — Caller Impact Analysis",
-            f"**Total callers:** {total_callers}  |  **Symbols with callers:** {len(caller_context)}",
-            "",
-            *[
-                "\n".join([
-                    f"## `{entry['symbol']}`",
-                    *[
-                        f"- `{c['name']}` in `{c.get('path', '?')}` (line {c.get('line', '?')})"
-                        for c in entry["callers"]
-                    ],
-                ])
-                for entry in caller_context
-            ],
-        ]))
-
         # ── Step 5: Determine risk level ────────────────────────────────
+        all_symbol_names = all_diff_symbols | {s.get("name", "") for s in graph_symbols}
         changed_symbol_names = list(all_symbol_names)
         if total_callers > 10 or len(all_symbol_names) > 5:
             risk_level = "high"
@@ -713,7 +591,7 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int) -> None:
             risk_level = "low"
 
         _write_step(review_dir, "05_risk_level.md", "\n".join([
-            f"# Step 5 — Risk Level",
+            "# Step 5 — Risk Level",
             "",
             f"**Risk level:** `{risk_level}`",
             f"**Total callers:** {total_callers}",
@@ -724,12 +602,10 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int) -> None:
         ]))
 
         # ── Step 6: Build context for LLM agents ───────────────────────
-        agent_context = _build_agent_context(
-            diff_text, resolved_imports, caller_context, graph_section
-        )
+        agent_context = _build_agent_context(diff_text, graph_section)
 
         _write_step(review_dir, "06_agent_context.md", "\n".join([
-            f"# Step 6 — Agent Context (what would be sent to the LLM)",
+            f"# Step 6 — Agent Context (graph + imports + callers)",
             "",
             agent_context,
         ]))
@@ -757,8 +633,42 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int) -> None:
             if prev_section:
                 agent_context = agent_context + "\n\n" + prev_section
 
-        # ── Step 8: Run multi-agent review ──────────────────────────────
-        review_results = await run_review(diff_text, agent_context, repo_id, pr_number)
+        # ── Step 7.5: Fetch full post-PR file snapshots (≤300 lines) ────
+        full_file_snapshots: Dict[str, str] = {}
+        try:
+            head_sha = await gh.get_pr_head_ref(owner, repo, pr_number)
+            fetch_tasks = [
+                gh.get_file_content(owner, repo, f, ref=head_sha)
+                for f in files_changed
+            ]
+            file_contents = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+            for file_path, content in zip(files_changed, file_contents):
+                if isinstance(content, Exception) or not content:
+                    continue
+                line_count = content.count("\n") + 1
+                if line_count <= 300:
+                    full_file_snapshots[file_path] = content
+            logger.info(
+                f"Fetched {len(full_file_snapshots)}/{len(files_changed)} full file snapshots"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to fetch file snapshots: {e}")
+
+        # ── Step 8: Assemble final prompt + run multi-agent review ───────
+        review_prompt = _build_review_prompt(
+            agent_context, full_file_snapshots, repo_id, pr_number
+        )
+
+        _write_step(review_dir, "06b_review_prompt.md", "\n".join([
+            f"# Step 6b — Final Review Prompt (sent to LLM agents)",
+            "",
+            review_prompt,
+        ]))
+
+        review_results = await run_review(review_prompt, repo_id, pr_number)
+        review_results.files_changed_summary = _parse_files_changed(
+            diff_text, review_results.issues
+        )
         logger.info(f"Review complete: {len(review_results.issues)} issues found")
 
         # ── Step 9: Reconcile new results against previous run ───────────
@@ -786,7 +696,12 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int) -> None:
             total_callers=total_callers,
             risk_level=risk_level,
         )
-        final_comment = format_github_comment(reconciled, context_data, pr_number)
+        final_comment = format_github_comment(
+            reconciled, context_data, pr_number,
+            files_changed_summary=review_results.files_changed_summary,
+            walk_through=review_results.walk_through,
+            raw_agent_json=review_results.model_dump_json(indent=2),
+        )
         await gh.post_comment(owner, repo, pr_number, final_comment)
         logger.info(f"Posted review comment on {owner}/{repo}#{pr_number}")
 
