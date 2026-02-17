@@ -1,6 +1,5 @@
-"""Multi-agent PR review pipeline using pydantic-ai."""
+"""PR review pipeline using a single pydantic-ai reviewer agent."""
 
-import asyncio
 import logging
 import os
 
@@ -11,25 +10,27 @@ from deepagent.config import config
 os.environ.setdefault("OPENROUTER_API_KEY", config.openrouter_api_key)
 
 from pydantic_ai import Agent  # noqa: E402
+from pydantic_ai.settings import ModelSettings  # noqa: E402
 from deepagent.models.agent_schemas import AgentFindings, Issue, ReviewResults
-from deepagent.prompts import BUG_HUNTER_PROMPT, SECURITY_AUDITOR_PROMPT
+from deepagent.prompts import REVIEWER_PROMPT
+
+CONFIDENCE_THRESHOLD = 7
 
 logger = logging.getLogger(__name__)
 
 MODEL = f"openrouter:{config.review_model}"
 
-bug_hunter = Agent(
-    MODEL,
-    system_prompt=BUG_HUNTER_PROMPT,
-    output_type=AgentFindings,
-    name="bug-hunter",
-)
+# Generous output token budget + 3-minute timeout guard.
+# GPT-4o-mini max output is 16,384 tokens; 15,000 leaves headroom for the
+# structured JSON wrapper while still capturing all realistic findings.
+_MODEL_SETTINGS = ModelSettings(max_tokens=15000, timeout=180)
 
-security_auditor = Agent(
+reviewer = Agent(
     MODEL,
-    system_prompt=SECURITY_AUDITOR_PROMPT,
+    system_prompt=REVIEWER_PROMPT,
     output_type=AgentFindings,
-    name="security-auditor",
+    model_settings=_MODEL_SETTINGS,
+    name="reviewer",
 )
 
 # Logfire instrumentation
@@ -38,61 +39,47 @@ try:
 
     if config.enable_logfire and config.logfire_token:
         logfire.configure(token=config.logfire_token)
-        logfire.instrument_pydantic_ai(bug_hunter)
-        logfire.instrument_pydantic_ai(security_auditor)
+        logfire.instrument_pydantic_ai(reviewer)
 except ImportError:
     pass
 
 
-def _build_user_prompt(diff_text: str, graph_context_section: str, repo_id: str, pr_number: int) -> str:
-    return (
-        f"## PR #{pr_number} in {repo_id}\n\n"
-        f"### Diff\n```diff\n{diff_text}\n```\n\n"
-        f"### Dependency Graph Context\n{graph_context_section}"
-    )
-
-
 def _dedup_issues(issues: list[Issue]) -> list[Issue]:
-    """Remove duplicate issues by (file, line_start, title)."""
+    """Remove duplicate issues by (file, line_start, normalized title prefix)."""
     seen: set[tuple[str, int, str]] = set()
     deduped: list[Issue] = []
     for issue in issues:
-        key = (issue.file, issue.line_start, issue.title)
+        # Normalize: first 5 words of lowercase title to catch near-duplicate wording
+        title_key = " ".join(issue.title.lower().split()[:5])
+        key = (issue.file, issue.line_start, title_key)
         if key not in seen:
             seen.add(key)
             deduped.append(issue)
     return deduped
 
 
-async def run_review(
-    diff_text: str,
-    graph_context_section: str,
-    repo_id: str,
-    pr_number: int,
-) -> ReviewResults:
-    """Run bug-hunter and security-auditor in parallel, merge results."""
+async def run_review(prompt: str, repo_id: str, pr_number: int) -> ReviewResults:
+    """Run the reviewer agent on a pre-built prompt and return structured results."""
 
-    prompt = _build_user_prompt(diff_text, graph_context_section, repo_id, pr_number)
+    logger.info(f"Starting review for {repo_id}#{pr_number}")
 
-    logger.info(f"Starting multi-agent review for {repo_id}#{pr_number}")
+    try:
+        result = await reviewer.run(prompt)
+        findings: AgentFindings = result.output
+    except Exception as exc:
+        logger.error(f"Reviewer agent failed: {exc}", exc_info=exc)
+        findings = AgentFindings(walk_through=[], issues=[], positive_findings=[])
 
-    bug_result, sec_result = await asyncio.gather(
-        bug_hunter.run(prompt),
-        security_auditor.run(prompt),
-    )
+    logger.info(f"Reviewer returned {len(findings.issues)} raw issues")
 
-    bug_findings: AgentFindings = bug_result.output
-    sec_findings: AgentFindings = sec_result.output
-
+    # Filter low-confidence findings
+    filtered = [i for i in findings.issues if i.confidence >= CONFIDENCE_THRESHOLD]
     logger.info(
-        f"bug-hunter: {len(bug_findings.issues)} issues, "
-        f"security-auditor: {len(sec_findings.issues)} issues"
+        f"After confidence filter (≥{CONFIDENCE_THRESHOLD}): "
+        f"{len(filtered)}/{len(findings.issues)} issues remain"
     )
 
-    all_issues = _dedup_issues(bug_findings.issues + sec_findings.issues)
-    all_positives = list(dict.fromkeys(
-        bug_findings.positive_findings + sec_findings.positive_findings
-    ))
+    all_issues = _dedup_issues(filtered)
 
     issue_count = len(all_issues)
     critical = sum(1 for i in all_issues if i.severity == "critical")
@@ -110,5 +97,6 @@ async def run_review(
     return ReviewResults(
         summary=summary,
         issues=all_issues,
-        positive_findings=all_positives,
+        positive_findings=findings.positive_findings,
+        walk_through=findings.walk_through,
     )

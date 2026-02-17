@@ -1378,33 +1378,30 @@ class CodeQueryService:
         self, repo_id: str, changes: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
         """
-        Enhanced context gathering using CodeFinder for comprehensive dependency analysis.
-        
-        This version:
-        - Gets full source code (not truncated)
-        - Follows import statements to retrieve imported function sources
-        - Uses CodeFinder for robust searching
-        - Falls back gracefully when CALLS relationships don't exist
-        - Includes upstream dependencies (what the function calls)
-        
-        Args:
-            repo_id: Repository ID (e.g. "owner/repo")
-            changes: List of {"file_path": "relative/path.py", "start_line": 10, "end_line": 30}
-            
-        Returns:
-            Dict with affected_symbols, callers, imports, dependencies, hierarchy
+        Build full relationship context for every changed Function, Method, and Class.
+
+        For each symbol in the diff line ranges:
+          - Full source code of the symbol itself
+          - Methods belonging to each changed Class (with source)
+          - Callers: every Function/Method that calls this symbol via CALLS edges
+          - Dependencies: every Function/Method this symbol calls via CALLS edges
+          - Imports: other in-repo symbols imported by the changed file
+          - Class hierarchy: parent/child classes for any changed Class
+
+        Both Function and Method node types are handled throughout — the graph
+        stores class methods as Function nodes under the class via CONTAINS.
         """
         from api.services.code_search import CodeFinder
-        
+
         code_finder = CodeFinder(self.db)
-        
+
         all_affected: List[Dict[str, Any]] = []
         all_callers: List[Dict[str, Any]] = []
         all_imports: List[Dict[str, Any]] = []
         all_dependencies: List[Dict[str, Any]] = []
         all_hierarchy: List[Dict[str, Any]] = []
-        seen_affected: set = set()  # Track unique affected symbols
-        seen_callers: set = set()   # Track symbols we've looked up callers for
+        seen_affected: set = set()
+        seen_callers: set = set()
         seen_imports: set = set()
 
         for change in changes:
@@ -1412,120 +1409,155 @@ class CodeQueryService:
             start_line = change.get("start_line", 1)
             end_line = change.get("end_line", 999999)
 
-            # 1. Find affected symbols with FULL source code
-            query = """
+            # ── 1. Affected symbols (Function, Class, and Method) ─────────────
+            # Method nodes are stored under Class via CONTAINS — we surface them
+            # here so the agent sees both the class body and individual methods.
+            affected_query = """
             MATCH (f:File {repo: $repo_id, path: $file_path})
-            WITH f
             MATCH (f)-[:CONTAINS]->(n)
-            WHERE (n:Function OR n:Class)
+            WHERE (n:Function OR n:Class OR n:Method)
               AND n.line_number IS NOT NULL
               AND n.line_number <= $end_line
               AND coalesce(n.end_line, n.line_number) >= $start_line
             RETURN
                 CASE
-                    WHEN n:Function THEN 'function'
-                    WHEN n:Class THEN 'class'
-                END as type,
-                n.name as name,
-                n.line_number as start_line,
-                coalesce(n.end_line, n.line_number) as end_line,
-                n.source as source,
-                n.docstring as docstring,
-                f.path as file_path
+                    WHEN n:Class    THEN 'class'
+                    WHEN n:Method   THEN 'method'
+                    ELSE                 'function'
+                END AS type,
+                n.name          AS name,
+                n.line_number   AS start_line,
+                coalesce(n.end_line, n.line_number) AS end_line,
+                n.source        AS source,
+                n.docstring     AS docstring,
+                n.args          AS args,
+                f.path          AS file_path
             ORDER BY n.line_number
             """
-            records, _, _ = self.db.run_query(query, {
+            records, _, _ = self.db.run_query(affected_query, {
                 "repo_id": repo_id,
                 "file_path": file_path,
                 "start_line": start_line,
                 "end_line": end_line,
             })
-
             symbols = [dict(r) for r in records]
-            
-            # Deduplicate and add to all_affected
+
             for s in symbols:
                 s["change_file"] = file_path
-                # Keep full source - don't truncate for better context
-                
-                # Deduplicate based on file path + name + line number
                 sym_key = f"{s['file_path']}:{s['name']}:{s['start_line']}"
                 if sym_key not in seen_affected:
                     seen_affected.add(sym_key)
                     all_affected.append(s)
 
-            # 2. For each UNIQUE affected symbol, find callers using CodeFinder
-            # (only look up callers once per symbol across all hunks)
             for sym in symbols:
                 caller_key = f"{sym['file_path']}:{sym['name']}"
                 if caller_key in seen_callers:
-                    continue  # Already looked up callers for this symbol
+                    continue
                 seen_callers.add(caller_key)
 
-                # Use CodeFinder to find who calls this function
+                # ── 2. Callers: who calls this symbol? ────────────────────────
+                # Match both Function and Method callers so class methods that
+                # call the changed code are not missed.
                 try:
-                    caller_results = code_finder.who_calls_function(
-                        sym["name"],
-                        sym.get("file_path")
-                    )
-                    
-                    if caller_results:
-                        callers = [
-                            {
-                                "name": c.get("caller_function"),
-                                "type": "function",
-                                "path": c.get("caller_file_path"),
-                                "line": c.get("caller_line_number"),
-                                "call_line": c.get("call_line_number"),
-                            }
-                            for c in caller_results
-                            if c.get("caller_function")
-                        ]
-                        
-                        if callers:
-                            all_callers.append({
-                                "symbol": sym["name"],
-                                "symbol_type": sym["type"],
-                                "callers": callers[:10],  # Limit to 10 callers
-                            })
+                    caller_query = """
+                    MATCH (target)
+                    WHERE (target:Function OR target:Method OR target:Class)
+                      AND target.name = $name
+                    WITH target
+                    MATCH (caller)-[call:CALLS]->(target)
+                    WHERE (caller:Function OR caller:Method)
+                      AND NOT coalesce(caller.is_dependency, false)
+                    OPTIONAL MATCH (caller_file:File)-[:CONTAINS]->(caller)
+                    RETURN DISTINCT
+                        caller.name             AS caller_name,
+                        CASE WHEN caller:Method THEN 'method' ELSE 'function' END AS caller_type,
+                        coalesce(caller.path, caller_file.path) AS caller_path,
+                        caller.line_number      AS caller_line,
+                        call.line_number        AS call_line,
+                        call.args               AS call_args
+                    ORDER BY caller_path, caller.line_number
+                    LIMIT 10
+                    """
+                    caller_records, _, _ = self.db.run_query(caller_query, {"name": sym["name"]})
+                    callers_list = [dict(r) for r in caller_records]
+                    if callers_list:
+                        all_callers.append({
+                            "symbol": sym["name"],
+                            "symbol_type": sym["type"],
+                            "callers": callers_list,
+                        })
                 except Exception as e:
                     logger.warning(f"Error finding callers for {sym['name']}: {e}")
 
-                # 3. Find what this function calls (dependencies)
+                # ── 3. Dependencies: what does this symbol call? ──────────────
+                # Match both Function and Method targets to catch calls to methods.
                 try:
-                    dep_results = code_finder.what_does_function_call(
-                        sym["name"],
-                        sym.get("file_path")
-                    )
-                    
-                    if dep_results:
-                        dependencies = [
-                            {
-                                "name": d.get("called_function"),
-                                "path": d.get("called_file_path"),
-                                "line": d.get("called_line_number"),
-                            }
-                            for d in dep_results
-                            if d.get("called_function")
-                        ]
-                        
-                        if dependencies:
-                            all_dependencies.append({
-                                "symbol": sym["name"],
-                                "dependencies": dependencies[:10],
-                            })
+                    dep_query = """
+                    MATCH (caller)
+                    WHERE (caller:Function OR caller:Method)
+                      AND caller.name = $name
+                      AND caller.path = $path
+                    MATCH (caller)-[call:CALLS]->(called)
+                    WHERE (called:Function OR called:Method)
+                      AND NOT coalesce(called.is_dependency, false)
+                    RETURN DISTINCT
+                        called.name  AS called_name,
+                        CASE WHEN called:Method THEN 'method' ELSE 'function' END AS called_type,
+                        called.path  AS called_path,
+                        call.line_number AS call_line,
+                        call.args    AS call_args
+                    ORDER BY call.line_number
+                    LIMIT 15
+                    """
+                    dep_records, _, _ = self.db.run_query(dep_query, {
+                        "name": sym["name"],
+                        "path": sym["file_path"],
+                    })
+                    deps_list = [dict(r) for r in dep_records]
+                    if deps_list:
+                        all_dependencies.append({
+                            "symbol": sym["name"],
+                            "dependencies": deps_list,
+                        })
                 except Exception as e:
                     logger.warning(f"Error finding dependencies for {sym['name']}: {e}")
 
-            # 4. Find imports in the changed file and retrieve imported function sources
+                # ── 4. Class methods: when a Class is affected, fetch all ──────
+                # its methods with full source so the agent sees what each
+                # method does — not just the class skeleton.
+                if sym["type"] == "class":
+                    try:
+                        methods_query = """
+                        MATCH (cls:Class {name: $class_name, path: $path})
+                        MATCH (cls)-[:CONTAINS]->(m:Function)
+                        RETURN
+                            m.name          AS name,
+                            m.line_number   AS line_number,
+                            coalesce(m.end_line, m.line_number) AS end_line,
+                            m.source        AS source,
+                            m.docstring     AS docstring,
+                            m.args          AS args
+                        ORDER BY m.line_number
+                        """
+                        method_records, _, _ = self.db.run_query(methods_query, {
+                            "class_name": sym["name"],
+                            "path": sym["file_path"],
+                        })
+                        methods_list = [dict(r) for r in method_records]
+                        if methods_list:
+                            sym["methods"] = methods_list
+                    except Exception as e:
+                        logger.warning(f"Error fetching methods for class {sym['name']}: {e}")
+
+            # ── 5. Imports: resolve imported names to in-repo source ──────────
             import_query = """
             MATCH (f:File {repo: $repo_id, path: $file_path})
             MATCH (f)-[r:IMPORTS]->(m)
             RETURN
-                r.alias as alias,
-                r.imported_name as imported_name,
-                m.name as module_name,
-                r.line_number as line_number
+                r.alias          AS alias,
+                r.imported_name  AS imported_name,
+                m.name           AS module_name,
+                r.line_number    AS line_number
             ORDER BY r.line_number
             LIMIT 20
             """
@@ -1533,21 +1565,17 @@ class CodeQueryService:
                 "repo_id": repo_id,
                 "file_path": file_path,
             })
-            
+
             for imp in import_records:
                 imported_name = imp.get("imported_name") or imp.get("alias")
                 if not imported_name or imported_name in seen_imports:
                     continue
                 seen_imports.add(imported_name)
-                
-                # Use CodeFinder to find the actual function/class source
+
                 try:
-                    # Try to find as function first
                     func_results = code_finder.find_by_function_name(imported_name, fuzzy_search=False)
-                    
                     if func_results:
-                        for func in func_results[:1]:  # Take the best match
-                            # Filter to same repo only
+                        for func in func_results[:1]:
                             if func.get("path") and repo_id in func.get("path", ""):
                                 all_imports.append({
                                     "name": imported_name,
@@ -1559,7 +1587,6 @@ class CodeQueryService:
                                     "from_file": file_path,
                                 })
                     else:
-                        # Try as class
                         class_results = code_finder.find_by_class_name(imported_name, fuzzy_search=False)
                         if class_results:
                             for cls in class_results[:1]:
@@ -1574,22 +1601,20 @@ class CodeQueryService:
                                         "from_file": file_path,
                                     })
                 except Exception as e:
-                    logger.warning(f"Error finding import {imported_name}: {e}")
+                    logger.warning(f"Error resolving import {imported_name}: {e}")
 
-            # 5. For affected classes, get hierarchy using CodeFinder
-            class_symbols = [s for s in symbols if s["type"] == "class"]
-            for cls in class_symbols:
+            # ── 6. Class hierarchy for affected classes ───────────────────────
+            for cls in [s for s in symbols if s["type"] == "class"]:
                 try:
                     hierarchy_info = code_finder.find_class_hierarchy(
-                        cls["name"],
-                        cls.get("file_path")
+                        cls["name"], cls.get("file_path")
                     )
-                    
                     if hierarchy_info:
                         all_hierarchy.append({
                             "class": cls["name"],
-                            "parents": hierarchy_info.get("parents", []),
-                            "children": hierarchy_info.get("children", []),
+                            "parents": hierarchy_info.get("parent_classes", []),
+                            "children": hierarchy_info.get("child_classes", []),
+                            "methods": hierarchy_info.get("methods", []),
                         })
                 except Exception as e:
                     logger.warning(f"Error finding hierarchy for {cls['name']}: {e}")
