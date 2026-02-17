@@ -49,7 +49,8 @@ class IngestionTaskPayload(BaseModel):
     repo_name: str
     branch: Optional[str] = None
     clear_existing: bool = False
-    pr_number: Optional[int] = None  
+    pr_number: Optional[int] = None
+    uid: Optional[str] = None  # Firebase UID — used to write repo metadata to Firestore on completion  
 
 
 class IncrementalPRPayload(BaseModel):
