@@ -1,6 +1,3 @@
-"""
-Repository management endpoints - Advanced implementation with Neo4j integration.
-"""
 
 import logging
 from fastapi import APIRouter, HTTPException, Query, Depends, Path
