@@ -1,11 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useEffect, useMemo, useRef, useState } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
@@ -15,10 +13,13 @@ import {
   ingestGithub,
   getIngestionJobStatus,
   getRepositoryStats,
+  getGitHubRepos,
   type RepositoryStatsResponse,
   type RepositoryStatistics,
-  type JobStatusResponse,
+  type GitHubRepo,
 } from "@/lib/api";
+
+// ── Types ──────────────────────────────────────────────────────────────────────
 
 interface Repository {
   id: string;
@@ -28,390 +29,496 @@ interface Repository {
   username?: string;
 }
 
+interface IngestingJob {
+  jobId: string;
+  status: string;
+  repo: GitHubRepo;
+}
+
+// ── Status badge ───────────────────────────────────────────────────────────────
+
+function SyncBadge({ status }: { status: string }) {
+  if (["pending", "dispatched", "running"].includes(status)) {
+    return (
+      <div className="flex items-center gap-1.5 text-amber-500">
+        <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
+        </svg>
+        <span className="text-xs font-medium">Syncing</span>
+      </div>
+    );
+  }
+  if (status === "completed") {
+    return (
+      <div className="flex items-center gap-1.5 text-emerald-500">
+        <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+        </svg>
+        <span className="text-xs font-medium">Synced</span>
+      </div>
+    );
+  }
+  if (status === "failed") {
+    return (
+      <div className="flex items-center gap-1.5 text-destructive">
+        <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+        </svg>
+        <span className="text-xs font-medium">Failed</span>
+      </div>
+    );
+  }
+  return null;
+}
+
+
 export default function RepositoriesPage() {
-  // Repository list state
   const [repositories, setRepositories] = useState<Repository[]>([]);
   const [isLoadingRepos, setIsLoadingRepos] = useState(true);
-
-  // Stats state
   const [repoStats, setRepoStats] = useState<Record<string, RepositoryStatistics>>({});
   const [loadingStats, setLoadingStats] = useState<Record<string, boolean>>({});
 
-  // Ingestion form state
-  const [githubUrl, setGithubUrl] = useState("");
-  const [owner, setOwner] = useState("");
-  const [repoName, setRepoName] = useState("");
-  const [branch, setBranch] = useState("");
-  const [clearExisting, setClearExisting] = useState(false);
+  // GitHub picker
+  const [showPicker, setShowPicker] = useState(false);
+  const [githubRepos, setGithubRepos] = useState<GitHubRepo[]>([]);
+  const [loadingGithubRepos, setLoadingGithubRepos] = useState(false);
+  const [pickerSearch, setPickerSearch] = useState("");
+  const [startingRepo, setStartingRepo] = useState<string | null>(null);
 
-  // Async job state
-  const [activeJobId, setActiveJobId] = useState<string | null>(null);
-  const [activeJobStatus, setActiveJobStatus] = useState<string | null>(null);
+  // Delete dialog
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  // Active ingestion jobs (keyed by full_name)
+  const [ingestingJobs, setIngestingJobs] = useState<Record<string, IngestingJob>>({});
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Stable ref so the interval callback always reads the latest jobs without
+  // being listed as an effect dependency (avoids re-creating the interval on
+  // every status update).
+  const ingestingJobsRef = useRef(ingestingJobs);
+  useEffect(() => { ingestingJobsRef.current = ingestingJobs; }, [ingestingJobs]);
 
-  // Parse GitHub URL to extract owner and repo
-  function parseGithubUrl(url: string): { owner: string; repo: string } | null {
-    try {
-      const cleanUrl = url.trim().replace(".git", "");
-      const match = cleanUrl.match(/github\.com\/([^/]+)\/([^/]+)/i);
-      if (!match) return null;
-      return { owner: match[1], repo: match[2] };
-    } catch {
-      return null;
-    }
-  }
+  // ── Data loading ─────────────────────────────────────────────────────────────
 
-  // Fetch repository statistics
-  async function fetchRepositoryStats(repo: Repository) {
+  async function fetchStats(repo: Repository) {
     const repoOwner = repo.owner ?? repo.username;
     const repoNameVal = repo.name ?? repo.repo_name;
-
-    if (!repoOwner || !repoNameVal) {
-      console.warn("Missing owner or name for repo:", repo);
-      return;
-    }
-
-    const key = repo.id;
-
-    setLoadingStats((prev) => ({ ...prev, [key]: true }));
-
+    if (!repoOwner || !repoNameVal) return;
+    const repoId = repo.id ?? `${repoOwner}/${repoNameVal}`;
+    setLoadingStats((prev) => ({ ...prev, [repoId]: true }));
     try {
-      const response: RepositoryStatsResponse = await getRepositoryStats(
-        repoOwner,
-        repoNameVal
-      );
-
-      setRepoStats((prev) => ({
-        ...prev,
-        [key]: response.statistics,
-      }));
-    } catch (error) {
-      console.error(`Failed to load stats for ${repoOwner}/${repoNameVal}:`, error);
+      const res: RepositoryStatsResponse = await getRepositoryStats(repoOwner, repoNameVal);
+      setRepoStats((prev) => ({ ...prev, [repoId]: res.statistics }));
+    } catch {
+      // stats are optional
     } finally {
-      setLoadingStats((prev) => ({ ...prev, [key]: false }));
+      setLoadingStats((prev) => ({ ...prev, [repoId]: false }));
     }
   }
 
-  // Load all repositories and their stats
   async function loadRepositories() {
     setIsLoadingRepos(true);
     try {
       const data = await listRepositories();
-      const repoList: Repository[] = Array.isArray(data) ? data : data?.repositories ?? [];
-
-      setRepositories(repoList);
-
-      // Fetch stats for each repository
-      for (const repo of repoList) {
-        fetchRepositoryStats(repo);
-      }
-    } catch (error) {
-      console.error("Failed to load repositories:", error);
+      const list: Repository[] = Array.isArray(data) ? data : data?.repositories ?? [];
+      setRepositories(list);
+      list.forEach(fetchStats);
+    } catch {
       toast.error("Failed to load repositories");
     } finally {
       setIsLoadingRepos(false);
     }
   }
 
-  // Poll job status
+  useEffect(() => { loadRepositories(); }, []);
+
+
+  // Derived: IDs of jobs that are still running — used as the stable dep array.
+  const activeJobIds = useMemo(
+    () =>
+      Object.values(ingestingJobs)
+        .filter((j) => !["completed", "failed"].includes(j.status))
+        .map((j) => j.jobId)
+        .sort()
+        .join(","),
+    [ingestingJobs],
+  );
+
   useEffect(() => {
-    if (!activeJobId) return;
+    if (!activeJobIds) {
+      if (pollRef.current) clearInterval(pollRef.current);
+      return;
+    }
 
     async function poll() {
-      try {
-        const job: JobStatusResponse = await getIngestionJobStatus(activeJobId!);
-        setActiveJobStatus(job.status);
+      // Read the current snapshot via ref — no stale closure over `ingestingJobs`.
+      const jobs = Object.values(ingestingJobsRef.current).filter(
+        (j) => !["completed", "failed"].includes(j.status)
+      );
+      for (const job of jobs) {
+        try {
+          const res = await getIngestionJobStatus(job.jobId);
+          const next = res.status;
 
-        if (job.status === "completed") {
-          setActiveJobId(null);
-          setActiveJobStatus(null);
-          toast.success(
-            `Successfully ingested ${job.owner}/${job.repo_name}`
-          );
-          loadRepositories();
-        } else if (job.status === "failed") {
-          setActiveJobId(null);
-          setActiveJobStatus(null);
-          toast.error(
-            `Ingestion failed: ${job.error_message || "Unknown error"}`
-          );
+          setIngestingJobs((prev) => {
+            if (!prev[job.repo.full_name]) return prev;
+            return { ...prev, [job.repo.full_name]: { ...prev[job.repo.full_name], status: next } };
+          });
+
+          if (next === "completed") {
+            toast.success(`${job.repo.full_name} synced successfully`);
+            loadRepositories();
+            setTimeout(() => {
+              setIngestingJobs((prev) => {
+                const copy = { ...prev };
+                delete copy[job.repo.full_name];
+                return copy;
+              });
+            }, 3000);
+          } else if (next === "failed") {
+            toast.error(`Sync failed for ${job.repo.full_name}`);
+          }
+        } catch {
+          // silent
         }
-      } catch (error) {
-        console.error("Failed to poll job status:", error);
       }
     }
 
-    // Poll immediately, then every 3 seconds
     poll();
     pollRef.current = setInterval(poll, 3000);
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [activeJobIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
-  }, [activeJobId]);
 
-  // Handle GitHub repository ingestion
-  async function handleIngest() {
-    let finalOwner = owner;
-    let finalRepo = repoName;
-
-    // If URL is provided, parse it
-    if (githubUrl) {
-      const parsed = parseGithubUrl(githubUrl);
-      if (!parsed) {
-        toast.error("Invalid GitHub URL");
-        return;
-      }
-      finalOwner = parsed.owner;
-      finalRepo = parsed.repo;
-    }
-
-    if (!finalOwner || !finalRepo) {
-      toast.error("Please provide owner and repository name");
-      return;
-    }
-
-    setActiveJobStatus("submitting");
+  async function openPicker() {
+    setShowPicker(true);
+    setPickerSearch("");
+    if (githubRepos.length > 0) return;
+    setLoadingGithubRepos(true);
     try {
-      const response = await ingestGithub({
-        owner: finalOwner,
-        repo_name: finalRepo,
-        branch: branch || undefined,
-        clear_existing: clearExisting,
-      });
-
-      setActiveJobId(response.job_id);
-      setActiveJobStatus(response.status);
-
-      toast.success(`Ingestion queued for ${finalOwner}/${finalRepo}`);
-
-      // Reset form
-      setGithubUrl("");
-      setOwner("");
-      setRepoName("");
-      setBranch("");
-      setClearExisting(false);
-    } catch (error) {
-      console.error("Ingestion request failed:", error);
-      setActiveJobStatus(null);
-      toast.error(
-        `Ingestion failed: ${error instanceof Error ? error.message : "Unknown error"}`
-      );
+      setGithubRepos(await getGitHubRepos());
+    } catch {
+      toast.error("Failed to load GitHub repositories");
+    } finally {
+      setLoadingGithubRepos(false);
     }
   }
 
-  // Handle repository deletion
-  async function handleDelete(repoId: string) {
-    if (!confirm("Are you sure you want to delete this repository?")) {
-      return;
-    }
-
+  async function handleStart(repo: GitHubRepo) {
+    setStartingRepo(repo.full_name);
     try {
-      await deleteRepository(repoId);
-      toast.success("Repository deleted successfully");
+      const [owner, repoName] = repo.full_name.split("/");
+      const res = await ingestGithub({ owner, repo_name: repoName, branch: repo.default_branch });
+      setShowPicker(false);
+      setIngestingJobs((prev) => ({
+        ...prev,
+        [repo.full_name]: { jobId: res.job_id, status: res.status, repo },
+      }));
+    } catch (err) {
+      toast.error(`Failed to start: ${err instanceof Error ? err.message : "Unknown error"}`);
+    } finally {
+      setStartingRepo(null);
+    }
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    setIsDeleting(true);
+    try {
+      await deleteRepository(deleteTarget);
+      toast.success("Repository deleted");
+      setDeleteTarget(null);
       loadRepositories();
-    } catch (error) {
-      console.error("Failed to delete repository:", error);
+    } catch {
       toast.error("Failed to delete repository");
+    } finally {
+      setIsDeleting(false);
     }
   }
 
-  // Derive button state
-  const isIngesting = activeJobId !== null || activeJobStatus === "submitting";
 
-  function ingestButtonLabel(): string {
-    if (activeJobStatus === "submitting") return "Submitting...";
-    if (activeJobStatus === "pending" || activeJobStatus === "dispatched") return "Queuing...";
-    if (activeJobStatus === "running") return "Running...";
-    return "Ingest Repository";
-  }
+  const existingKeys = new Set(
+    repositories.map((r) => `${r.owner ?? r.username}/${r.name ?? r.repo_name}`)
+  );
+  const pendingCards = Object.values(ingestingJobs).filter(
+    (j) => !existingKeys.has(j.repo.full_name)
+  );
 
-  // Load repositories on mount
-  useEffect(() => {
-    loadRepositories();
-  }, []);
+  const filteredRepos = githubRepos.filter(
+    (r) =>
+      r.full_name.toLowerCase().includes(pickerSearch.toLowerCase()) ||
+      (r.description ?? "").toLowerCase().includes(pickerSearch.toLowerCase())
+  );
+
 
   return (
-    <div className="container py-8 space-y-6 max-w-6xl mx-auto">
-      <div>
-        <h1 className="text-3xl font-bold">Repositories</h1>
-        <p className="text-muted-foreground mt-2">
-          Manage and ingest repositories for code analysis
-        </p>
+    <div className="container py-8 space-y-6 max-w-5xl mx-auto">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold">Repositories</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            {repositories.length + pendingCards.length} repositories
+          </p>
+        </div>
+        <Button onClick={openPicker} size="sm" className="gap-1.5">
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+          </svg>
+          Add Repository
+        </Button>
       </div>
 
-      {/* Ingestion Form */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Ingest GitHub Repository</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {/* GitHub URL Input */}
-          <div className="space-y-2">
-            <Label htmlFor="github-url">GitHub Repository URL</Label>
-            <Input
-              id="github-url"
-              placeholder="https://github.com/owner/repository"
-              value={githubUrl}
-              onChange={(e) => setGithubUrl(e.target.value)}
-              disabled={isIngesting}
-            />
+      {/* Repository list */}
+      <div className="space-y-2">
+        {isLoadingRepos ? (
+          <>
+            <Skeleton className="h-20 w-full rounded-lg" />
+            <Skeleton className="h-20 w-full rounded-lg" />
+          </>
+        ) : repositories.length === 0 && pendingCards.length === 0 ? (
+          <div className="text-center py-16 text-muted-foreground border rounded-xl border-dashed">
+            <p className="font-medium">No repositories yet</p>
+            <p className="text-sm mt-1">Click <strong>Add Repository</strong> to get started</p>
           </div>
+        ) : (
+          <>
+            {/* Optimistic cards for repos being ingested */}
+            {pendingCards.map((job) => {
+              const [owner, repoName] = job.repo.full_name.split("/");
+              return (
+                <div
+                  key={job.repo.full_name}
+                  className="flex items-center justify-between px-4 py-3.5 rounded-lg border bg-card"
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2.5">
+                      <span className="font-medium text-sm">{owner}/{repoName}</span>
+                      <SyncBadge status={job.status} />
+                    </div>
+                    {job.repo.language && (
+                      <span className="text-xs text-muted-foreground">{job.repo.language}</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
 
-          <div className="relative">
-            <div className="absolute inset-0 flex items-center">
-              <span className="w-full border-t" />
-            </div>
-            <div className="relative flex justify-center text-xs uppercase">
-              <span className="bg-background px-2 text-muted-foreground">Or</span>
-            </div>
-          </div>
+            {/* Synced repositories */}
+            {repositories.map((repo) => {
+              const repoOwner = repo.owner ?? repo.username;
+              const repoNameVal = repo.name ?? repo.repo_name;
+              const key = `${repoOwner}/${repoNameVal}`;
+              const repoId = repo.id ?? `${repoOwner}/${repoNameVal}`;
+              const job = ingestingJobs[key];
+              const stats = repoStats[repoId];
+              const isLoadingStatsForRepo = loadingStats[repoId];
 
-          {/* Manual Owner/Repo Input */}
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="owner">Owner</Label>
-              <Input
-                id="owner"
-                placeholder="Pavel401"
-                value={owner}
-                onChange={(e) => setOwner(e.target.value)}
-                disabled={isIngesting}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="repo-name">Repository Name</Label>
-              <Input
-                id="repo-name"
-                placeholder="FinanceBro"
-                value={repoName}
-                onChange={(e) => setRepoName(e.target.value)}
-                disabled={isIngesting}
-              />
-            </div>
-          </div>
-
-          {/* Branch Input */}
-          <div className="space-y-2">
-            <Label htmlFor="branch">Branch (optional)</Label>
-            <Input
-              id="branch"
-              placeholder="main"
-              value={branch}
-              onChange={(e) => setBranch(e.target.value)}
-              disabled={isIngesting}
-            />
-          </div>
-
-          {/* Clear Existing Switch */}
-          <div className="flex items-center gap-2">
-            <Switch
-              id="clear-existing"
-              checked={clearExisting}
-              onCheckedChange={setClearExisting}
-              disabled={isIngesting}
-            />
-            <Label htmlFor="clear-existing">Clear existing data</Label>
-          </div>
-
-          {/* Ingest Button */}
-          <Button
-            onClick={handleIngest}
-            disabled={isIngesting || (!githubUrl && (!owner || !repoName))}
-            className="w-full"
-          >
-            {ingestButtonLabel()}
-          </Button>
-        </CardContent>
-      </Card>
-
-      {/* Repository List */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Your Repositories ({repositories.length})</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {isLoadingRepos ? (
-            <div className="space-y-4">
-              <Skeleton className="h-24 w-full" />
-              <Skeleton className="h-24 w-full" />
-            </div>
-          ) : repositories.length === 0 ? (
-            <div className="text-center py-12 text-muted-foreground">
-              <p>No repositories found</p>
-              <p className="text-sm mt-2">Ingest a repository to get started</p>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {repositories.map((repo) => {
-                const repoOwner = repo.owner ?? repo.username;
-                const repoNameVal = repo.name ?? repo.repo_name;
-                const stats = repoStats[repo.id];
-                const isLoadingStatsForRepo = loadingStats[repo.id];
-
-                return (
-                  <div
-                    key={repo.id}
-                    className="flex items-start justify-between p-4 rounded-lg border bg-card hover:bg-accent/50 transition-colors"
-                  >
-                    <div className="space-y-3 flex-1">
-                      {/* Repository Name */}
-                      <div>
-                        <h3 className="font-semibold text-lg">
-                          {repoOwner}/{repoNameVal}
-                        </h3>
-                        <p className="text-sm text-muted-foreground">{repo.id}</p>
-                      </div>
-
-                      {/* Statistics */}
-                      {isLoadingStatsForRepo ? (
-                        <Skeleton className="h-8 w-full max-w-md" />
-                      ) : stats ? (
-                        <div className="flex flex-wrap gap-2">
-                          <Badge variant="outline" className="gap-1">
-                            <span>{stats.files.toLocaleString()} files</span>
-                          </Badge>
-                          <Badge variant="outline" className="gap-1">
-                            <span>{stats.classes.toLocaleString()} classes</span>
-                          </Badge>
-                          <Badge variant="outline" className="gap-1">
-                            <span>{stats.functions.toLocaleString()} functions</span>
-                          </Badge>
-                          <Badge variant="outline" className="gap-1">
-                            <span>{stats.lines.toLocaleString()} lines</span>
-                          </Badge>
-                          {stats.languages && stats.languages.length > 0 && (
-                            <>
-                              {stats.languages.map((lang) => (
-                                <Badge key={lang} variant="secondary">
-                                  {lang}
-                                </Badge>
-                              ))}
-                            </>
-                          )}
-                        </div>
+              return (
+                <div
+                  key={repoId}
+                  className="flex items-center justify-between px-4 py-3.5 rounded-lg border bg-card hover:bg-accent/30 transition-colors"
+                >
+                  <div className="space-y-1.5 flex-1 min-w-0">
+                    <div className="flex items-center gap-2.5">
+                      <span className="font-medium text-sm">{repoOwner}/{repoNameVal}</span>
+                      {job ? (
+                        <SyncBadge status={job.status} />
                       ) : (
-                        <p className="text-sm text-muted-foreground">
-                          Stats not available
-                        </p>
+                        <div className="flex items-center gap-1.5 text-emerald-500">
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                          </svg>
+                          <span className="text-xs font-medium">Synced</span>
+                        </div>
                       )}
                     </div>
-
-                    {/* Delete Button */}
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onClick={() => handleDelete(repo.id)}
-                    >
-                      Delete
-                    </Button>
+                    {isLoadingStatsForRepo ? (
+                      <Skeleton className="h-4 w-48" />
+                    ) : stats ? (
+                      <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                        <span>{stats.files.toLocaleString()} files</span>
+                        <span>{stats.functions.toLocaleString()} functions</span>
+                        <span>{stats.classes.toLocaleString()} classes</span>
+                        <span>{stats.lines.toLocaleString()} lines</span>
+                        {stats.languages?.slice(0, 3).map((lang) => (
+                          <Badge key={lang} variant="secondary" className="text-xs h-4 px-1.5">{lang}</Badge>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
-                );
-              })}
+                  <button
+                    onClick={() => setDeleteTarget(repo.id ?? `${repoOwner}/${repoNameVal}`)}
+                    aria-label={`Delete repository ${repoOwner}/${repoNameVal}`}
+                    className="p-2 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors shrink-0 ml-3"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
+                </div>
+              );
+            })}
+          </>
+        )}
+      </div>
+
+      {/* Delete confirmation dialog — Radix Dialog for focus-trap, Escape, ARIA */}
+      <Dialog.Root
+        open={deleteTarget !== null}
+        onOpenChange={(open) => { if (!open && !isDeleting) setDeleteTarget(null); }}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" />
+          <Dialog.Content
+            className="fixed left-1/2 top-1/2 z-50 w-full max-w-sm -translate-x-1/2 -translate-y-1/2 mx-4 bg-background border rounded-xl shadow-2xl focus:outline-none"
+            onInteractOutside={(e) => { if (isDeleting) e.preventDefault(); }}
+          >
+            {/* Icon + title */}
+            <div className="flex items-start gap-3 px-6 pt-6 pb-4">
+              <div className="flex items-center justify-center w-9 h-9 rounded-full bg-destructive/10 shrink-0 mt-0.5">
+                <svg className="w-4 h-4 text-destructive" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              </div>
+              <div className="space-y-1">
+                <Dialog.Title className="font-semibold text-sm">Delete repository</Dialog.Title>
+                <Dialog.Description className="text-sm text-muted-foreground">
+                  Are you sure you want to delete{" "}
+                  <span className="font-medium text-foreground">{deleteTarget}</span>?
+                  This will remove all ingested graph data and cannot be undone.
+                </Dialog.Description>
+              </div>
             </div>
-          )}
-        </CardContent>
-      </Card>
+
+            {/* Actions */}
+            <div className="flex items-center justify-end gap-2 px-6 py-4 border-t">
+              <Dialog.Close asChild>
+                <button
+                  disabled={isDeleting}
+                  className="px-3 py-1.5 text-sm rounded-md border hover:bg-accent transition-colors disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+              </Dialog.Close>
+              <button
+                onClick={confirmDelete}
+                disabled={isDeleting}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-md bg-destructive text-white hover:bg-destructive/90 transition-colors disabled:opacity-50"
+              >
+                {isDeleting ? (
+                  <>
+                    <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
+                    </svg>
+                    Deleting…
+                  </>
+                ) : "Delete"}
+              </button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      {/* GitHub Repo Picker Modal */}
+      {showPicker && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+            onClick={() => setShowPicker(false)}
+          />
+          <div className="relative z-10 w-full max-w-md mx-4 bg-background border rounded-xl shadow-2xl flex flex-col max-h-[75vh]">
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-4 border-b">
+              <h2 className="font-semibold">Add Repository</h2>
+              <button
+                onClick={() => setShowPicker(false)}
+                className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded-md hover:bg-accent"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Search */}
+            <div className="px-4 py-3 border-b">
+              <Input
+                placeholder="Search repositories..."
+                value={pickerSearch}
+                onChange={(e) => setPickerSearch(e.target.value)}
+                autoFocus
+                className="h-8 text-sm"
+              />
+            </div>
+
+            {/* List */}
+            <div className="flex-1 overflow-y-auto py-1">
+              {loadingGithubRepos ? (
+                <div className="space-y-1 p-3">
+                  {[1, 2, 3, 4, 5].map((n) => <Skeleton key={n} className="h-14 w-full rounded-lg" />)}
+                </div>
+              ) : filteredRepos.length === 0 ? (
+                <div className="text-center py-10 text-sm text-muted-foreground">
+                  {pickerSearch ? "No matching repositories" : "No repositories found"}
+                </div>
+              ) : (
+                filteredRepos.map((repo) => {
+                  const isStarting = startingRepo === repo.full_name;
+                  const alreadyIngesting = repo.full_name in ingestingJobs;
+                  const alreadyIngested = existingKeys.has(repo.full_name);
+                  const disabled = isStarting || alreadyIngesting || alreadyIngested;
+
+                  return (
+                    <div
+                      key={repo.full_name}
+                      className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-accent/50 transition-colors"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-sm truncate">{repo.full_name}</span>
+                          {repo.private && (
+                            <span className="text-xs text-muted-foreground border rounded px-1 shrink-0">
+                              Private
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          {repo.language && (
+                            <span className="text-xs text-muted-foreground">{repo.language}</span>
+                          )}
+                          {repo.stargazers_count > 0 && (
+                            <span className="text-xs text-muted-foreground">★ {repo.stargazers_count}</span>
+                          )}
+                          {repo.description && (
+                            <span className="text-xs text-muted-foreground truncate">{repo.description}</span>
+                          )}
+                        </div>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant={alreadyIngested ? "outline" : "default"}
+                        disabled={disabled}
+                        onClick={() => handleStart(repo)}
+                        className="shrink-0 h-7 text-xs px-3"
+                      >
+                        {isStarting ? (
+                          <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
+                          </svg>
+                        ) : alreadyIngested ? "Synced" : alreadyIngesting ? "Syncing" : "Start"}
+                      </Button>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
