@@ -1463,6 +1463,7 @@ class CodeQueryService:
                     MATCH (target)
                     WHERE (target:Function OR target:Method OR target:Class)
                       AND target.name = $name
+                      AND coalesce(target.path, '') CONTAINS $repo_id
                     WITH target
                     MATCH (caller)-[call:CALLS]->(target)
                     WHERE (caller:Function OR caller:Method)
@@ -1478,7 +1479,9 @@ class CodeQueryService:
                     ORDER BY caller_path, caller.line_number
                     LIMIT 10
                     """
-                    caller_records, _, _ = self.db.run_query(caller_query, {"name": sym["name"]})
+                    caller_records, _, _ = self.db.run_query(
+                        caller_query, {"name": sym["name"], "repo_id": repo_id}
+                    )
                     callers_list = [dict(r) for r in caller_records]
                     if callers_list:
                         all_callers.append({

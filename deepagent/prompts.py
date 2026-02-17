@@ -54,14 +54,31 @@ raw exception messages returned to users or stored in external systems
 
 ---
 
+## Part 4 — Positive Findings (REQUIRED)
+
+**Always** populate `positive_findings` with 3-6 entries. This is not optional.
+
+Look for:
+- Security improvements (e.g. adding auth checks, input validation, UID scoping)
+- Good error handling patterns (try/except with proper logging, fallbacks)
+- Code quality wins (reducing duplication, simplifying control flow, typed models)
+- Defensive programming (early returns, guard clauses, validation)
+- Architectural improvements (decoupling, single responsibility, better abstractions)
+
+Each entry must be **specific** — reference the actual file, function, or pattern:
+- ✅ "Authentication added to `delete_repository` via `get_current_user` dependency — prevents unauthenticated deletions"
+- ❌ "Good use of authentication" (too vague)
+
+---
+
 ## Output Rules (CRITICAL — read carefully)
 
 1. **ONE issue per bug/vulnerability, per affected line.** If the same problem appears \
 on lines 97, 100, 103 — that is THREE separate issues. NEVER group them.
 2. **Every issue MUST have an exact `line_start`** from the diff `+` lines.
-3. **`code_snippet`**: Copy the exact 2–6 problematic `+` lines from the diff verbatim. \
+3. **`code_snippet`**: Copy the exact 2-6 problematic `+` lines from the diff verbatim. \
 This is displayed inline in the PR comment.
-4. **`ai_fix`**: Write a unified diff patch (lines prefixed `-`/`+`). Include 1–2 lines \
+4. **`ai_fix`**: Write a unified diff patch (lines prefixed `-`/`+`). Include 1-2 lines \
 of unchanged context around the fix. Example:
    ```
      uid = user.get("uid")
@@ -74,7 +91,7 @@ of unchanged context around the fix. Example:
 Explain WHY it is a problem and what can go wrong at runtime. Reference CWE for security issues.
 6. **`suggestion`**: One clear sentence on how to fix it, referencing the actual code.
 7. **`impact`**: Describe the concrete consequence: data loss, auth bypass, crash, etc.
-8. **Confidence rule**: 10 = proven from diff alone; 7–9 = strong signal, some context assumed; \
+8. **Confidence rule**: 10 = proven from diff alone; 7-9 = strong signal, some context assumed; \
 ≤6 = OMIT entirely — you cannot verify without more code.
 9. Do NOT report issues in `-` (deleted) lines.
 10. Do NOT report issues when confirming them requires seeing code outside the diff \
