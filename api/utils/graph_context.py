@@ -1,7 +1,22 @@
 """Build markdown graph-context sections for the LLM prompt."""
 
+from pathlib import Path
+from typing import Any
 
-def build_graph_context_section(graph_context: dict) -> str:
+_EXT_TO_LANG_HINT: dict[str, str] = {
+    ".py": "python", ".js": "javascript", ".jsx": "javascript",
+    ".ts": "typescript", ".tsx": "typescript", ".go": "go",
+    ".rs": "rust", ".java": "java", ".rb": "ruby",
+    ".c": "c", ".cpp": "cpp", ".cs": "csharp",
+    ".kt": "kotlin", ".scala": "scala", ".swift": "swift", ".php": "php",
+}
+
+
+def _lang_hint(file_path: str) -> str:
+    return _EXT_TO_LANG_HINT.get(Path(file_path).suffix.lower(), "")
+
+
+def build_graph_context_section(graph_context: dict[str, Any]) -> str:
     """Build a markdown section from graph context for the LLM prompt."""
     parts: list[str] = []
 
@@ -37,7 +52,7 @@ def build_graph_context_section(graph_context: dict) -> str:
             if source:
                 if len(source) > 10000:
                     source = source[:10000] + "\n# ... (source truncated)"
-                parts.append("```python")
+                parts.append(f"```{_lang_hint(file_path)}")
                 parts.append(source)
                 parts.append("```")
 
@@ -59,7 +74,7 @@ def build_graph_context_section(graph_context: dict) -> str:
                     if m_source:
                         if len(m_source) > 5000:
                             m_source = m_source[:5000] + "\n# ... (truncated)"
-                        parts.append("```python")
+                        parts.append(f"```{_lang_hint(file_path)}")
                         parts.append(m_source)
                         parts.append("```")
 
@@ -122,7 +137,7 @@ def build_graph_context_section(graph_context: dict) -> str:
             if imp_source:
                 if len(imp_source) > 5000:
                     imp_source = imp_source[:5000] + "\n# ... (truncated)"
-                parts.append("```python")
+                parts.append(f"```{_lang_hint(imp_path)}")
                 parts.append(imp_source)
                 parts.append("```")
             parts.append("")

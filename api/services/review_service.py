@@ -212,9 +212,7 @@ def extract_symbols_from_diff(diff_text: str) -> Tuple[Set[str], Set[str]]:
 
     added_source = _extract_added_source_by_file(diff_text)
 
-    print('----- The Added source for the diff -----')
-    print(added_source)
-    print('-----------------------------------------------------')
+    logger.debug("Added source for diff: %s", added_source)
 
     for file_path, source in added_source.items():
         #get the file extension
@@ -289,7 +287,11 @@ def _build_agent_context(diff_text: str, graph_section: str) -> str:
     return "\n".join(parts) if parts else "No additional context available."
 
 
-def _parse_files_changed(diff_text: str, issues: list[Issue]) -> list[FileSummary]:
+def _parse_files_changed(
+    diff_text: str,
+    issues: list[Issue],
+    walk_through: list[str] | None = None,
+) -> list[FileSummary]:
     """Derive FileSummary list mechanically from diff line counts."""
     file_stats: Dict[str, tuple[int, int]] = {}
     current_file: str | None = None
@@ -306,18 +308,23 @@ def _parse_files_changed(diff_text: str, issues: list[Issue]) -> list[FileSummar
             added, removed = file_stats[current_file]
             file_stats[current_file] = (added, removed + 1)
 
-    # Use the first issue title per file as a one-sentence "what changed" description
-    file_to_issue_title: Dict[str, str] = {}
+    # Build a per-file description from the agent's walkthrough (preferred) or
+    # fall back to the first issue title for the file, then "Modified".
+    file_to_description: Dict[str, str] = {}
+    for entry in (walk_through or []):
+        if " — " in entry:
+            wt_file, wt_desc = entry.split(" — ", 1)
+            file_to_description[wt_file.strip().strip("`")] = wt_desc.strip()
     for issue in issues:
-        if issue.file not in file_to_issue_title:
-            file_to_issue_title[issue.file] = issue.title
+        if issue.file not in file_to_description:
+            file_to_description[issue.file] = issue.title
 
     return [
         FileSummary(
             file=file_path,
             lines_added=added,
             lines_removed=removed,
-            what_changed=file_to_issue_title.get(file_path, "Modified"),
+            what_changed=file_to_description.get(file_path, "Modified"),
         )
         for file_path, (added, removed) in file_stats.items()
     ]
@@ -605,7 +612,7 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int) -> None:
         agent_context = _build_agent_context(diff_text, graph_section)
 
         _write_step(review_dir, "06_agent_context.md", "\n".join([
-            f"# Step 6 — Agent Context (graph + imports + callers)",
+            "# Step 6 — Agent Context (graph + imports + callers)",
             "",
             agent_context,
         ]))
@@ -660,14 +667,14 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int) -> None:
         )
 
         _write_step(review_dir, "06b_review_prompt.md", "\n".join([
-            f"# Step 6b — Final Review Prompt (sent to LLM agents)",
+            "# Step 6b — Final Review Prompt (sent to LLM agents)",
             "",
             review_prompt,
         ]))
 
         review_results = await run_review(review_prompt, repo_id, pr_number)
         review_results.files_changed_summary = _parse_files_changed(
-            diff_text, review_results.issues
+            diff_text, review_results.issues, walk_through=review_results.walk_through
         )
         logger.info(f"Review complete: {len(review_results.issues)} issues found")
 

@@ -22,25 +22,27 @@ class Issue(BaseModel):
     code_snippet: str | None = Field(
         default=None,
         description=(
-            "The exact problematic lines from the diff (2–6 lines max), "
+            "The exact problematic lines from the diff (2-6 lines max), "
             "verbatim as they appear in the `+` lines. Used for inline display."
         ),
     )
     confidence: int = Field(
         default=8,
+        ge=0,
+        le=10,
         description=(
-            "Self-assessed confidence 0–10. "
+            "Self-assessed confidence 0-10. "
             "10 = provable from diff lines alone. "
-            "7–9 = strong signal, some context assumed. "
-            "<7 = needs full file to confirm — do not include."
+            "7-9 = strong signal, some context assumed. "
+            "<7 = needs full file to confirm - do not include."
         ),
     )
     ai_fix: str | None = Field(
         default=None,
         description=(
             "Unified diff patch showing the fix. Use `-` prefix for removed lines "
-            "and `+` prefix for added lines. Keep it minimal — only the changed lines "
-            "plus 1–2 lines of context. Only populate when the fix is unambiguous."
+            "and `+` prefix for added lines. Keep it minimal - only the changed lines "
+            "plus 1-2 lines of context. Only populate when the fix is unambiguous."
         ),
     )
     # Populated post-reconciliation (not by the LLM)
@@ -77,7 +79,15 @@ class AgentFindings(BaseModel):
         ),
     )
     issues: list[Issue] = Field(default_factory=list)
-    positive_findings: list[str] = Field(default_factory=list)
+    positive_findings: list[str] = Field(
+        default_factory=list,
+        description=(
+            "3–6 specific things done well in this PR: good patterns, security improvements, "
+            "test coverage, refactors that reduce complexity, etc. "
+            "Be concrete — reference the actual code or file, not generic praise. "
+            "Always populate this — even if there are many issues, acknowledge what was done right."
+        ),
+    )
 
 
 class FileSummary(BaseModel):

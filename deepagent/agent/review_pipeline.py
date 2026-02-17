@@ -66,8 +66,8 @@ async def run_review(prompt: str, repo_id: str, pr_number: int) -> ReviewResults
     try:
         result = await reviewer.run(prompt)
         findings: AgentFindings = result.output
-    except Exception as exc:
-        logger.error(f"Reviewer agent failed: {exc}", exc_info=exc)
+    except Exception:
+        logger.exception("Reviewer agent failed — returning empty findings")
         findings = AgentFindings(walk_through=[], issues=[], positive_findings=[])
 
     logger.info(f"Reviewer returned {len(findings.issues)} raw issues")
