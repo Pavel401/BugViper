@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "63b24b799024",
+  "strategy": "manual-commit",
+  "branch": "agent-changes",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "api/services/review_service.py",
+    "api/utils/comment_formatter.py",
+    "api/utils/graph_context.py",
+    "db/queries.py",
+    "deepagent/agent/review_pipeline.py",
+    "deepagent/models/agent_schemas.py",
+    "deepagent/prompts.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/63/b24b799024/0/metadata.json",
+      "transcript": "/63/b24b799024/0/full.jsonl",
+      "context": "/63/b24b799024/0/context.md",
+      "content_hash": "/63/b24b799024/0/content_hash.txt",
+      "prompt": "/63/b24b799024/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 47,
+    "cache_creation_tokens": 32088,
+    "cache_read_tokens": 4916866,
+    "output_tokens": 8281,
+    "api_call_count": 37
+  }
+}
