@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "92d85572a260",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 5,
+  "files_touched": [
+    "CYPHER_GUIDE.md",
+    "Claude.md",
+    "api/routers/query.py",
+    "db/queries.py",
+    "db/schema.py",
+    "frontend/app/(protected)/query/page.tsx",
+    "frontend/lib/api.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/92/d85572a260/0/metadata.json",
+      "transcript": "/92/d85572a260/0/full.jsonl",
+      "context": "/92/d85572a260/0/context.md",
+      "content_hash": "/92/d85572a260/0/content_hash.txt",
+      "prompt": "/92/d85572a260/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 69,
+    "cache_creation_tokens": 152378,
+    "cache_read_tokens": 5631615,
+    "output_tokens": 20148,
+    "api_call_count": 53
+  }
+}

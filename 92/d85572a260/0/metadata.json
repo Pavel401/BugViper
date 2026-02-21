@@ -1,0 +1,36 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "92d85572a260",
+  "session_id": "b0273ced-89a6-4b81-89a4-eac94e094db0",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-21T12:39:53.892635Z",
+  "branch": "main",
+  "checkpoints_count": 5,
+  "files_touched": [
+    "CYPHER_GUIDE.md",
+    "Claude.md",
+    "api/routers/query.py",
+    "db/queries.py",
+    "db/schema.py",
+    "frontend/app/(protected)/query/page.tsx",
+    "frontend/lib/api.ts"
+  ],
+  "agent": "Claude Code",
+  "transcript_identifier_at_start": "a19273c6-3abf-4e1d-8f66-88878347da66",
+  "token_usage": {
+    "input_tokens": 69,
+    "cache_creation_tokens": 152378,
+    "cache_read_tokens": 5631615,
+    "output_tokens": 20148,
+    "api_call_count": 53
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-21T12:39:53.72486Z",
+    "agent_lines": 784,
+    "human_added": 0,
+    "human_modified": 599,
+    "human_removed": 976,
+    "total_committed": 1135,
+    "agent_percentage": 69.0748898678414
+  }
+}
