@@ -1,0 +1,263 @@
+which files does BugViper able to ingest ?
+
+---
+
+[Request interrupted by user]
+
+---
+
+create a scriptt that can check each file in this project and count the number of lines    '.py', '.ipynb', '.js', '.jsx', '.mjs', '.cjs', '.go', '.ts', '.tsx',
+        '.cpp', '.h', '.hpp', '.rs', '.c', '.java', '.rb', '.cs', '.php',
+        '.kt', '.scala', '.sc', '.swift', '.hs' . Pnlt this files . I want to cross verify the Pavel401/BugViper
+Synced
+100 files
+633 functions
+75 classes
+24,504 lines
+python
+typescript
+
+---
+
+skmabudalam@SKs-MacBook-Air BugViper % ./count_l
+skmabudalam@SKs-MacBook-Air BugViper % source /Users/skmabudalam/Documents/BugViper/.venv/bin/activate
+(BugViper) skmabudalam@SKs-MacBook-Air BugViper % clear
+(BugViper) skmabudalam@SKs-MacBook-Air BugViper % ./count_lines.sh
+./count_lines.sh: line 8: declare: -A: invalid option
+declare: usage: declare [-afFirtx] [-p] [name[=value] ...]
+./count_lines.sh: line 9: declare: -A: invalid option
+declare: usage: declare [-afFirtx] [-p] [name[=value] ...]
+./count_lines.sh: line 12: .py: syntax error: operand expected (error token is ".py")
+./count_lines.sh: line 17: .py: syntax error: operand expected (error token is ".py")
+
+EXT           FILES        LINES
+---------- -------- ------------
+./count_lines.sh: line 23: .py: syntax error: operand expected (error token is ".py")
+---------- -------- ------------
+TOTAL             0            0
+(BugViper) skmabudalam@SKs-MacBook-Air BugViper %
+
+---
+
+what is .mjs file ?
+
+---
+
+remove claude.md from the git histor and add it to gitignore
+
+---
+
+yes
+
+---
+
+[Request interrupted by user for tool use]
+
+---
+
+bro did you delete the my commited files as well ?
+
+---
+
+[Request interrupted by user for tool use]
+
+---
+
+bastard you deleted all the queries I was using till now , all the changes you have removed from my git .
+
+---
+
+No you even removed my current work from the git add.
+
+---
+
+add them
+
+---
+
+Areh madarchod , you deleted all my changes ? any way to restore them ? I was working on this files and was not commited the changes , you just reset it .
+
+---
+
+No Ui also fetch
+
+---
+
+## Error Type
+Build Error
+
+## Error Message
+Module not found: Can't resolve '@/components/ui/scroll-area'
+
+## Build Output
+./app/(protected)/query/page.tsx:22:1
+Module not found: Can't resolve '@/components/ui/scroll-area'
+  20 | import { useCodeSearch, useClassHierarchy, useSymbolDefinition, useCodeFinder, useComplexityAnalysis, useRelationshipAnalysis, useLanguageQuery, useAdvancedSearch } from '@/lib/hooks/use-api';
+  21 | import { Skeleton } from '@/components/ui/skeleton';
+> 22 | import { ScrollArea } from '@/components/ui/scroll-area';
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  23 | import { Separator } from '@/components/ui/separator';
+  24 | import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+  25 | import type { SearchResult, ClassHierarchy, SymbolDefinition, CodeFinderResult, RelatedCodeResult, ComplexityResult, LanguageSymbolResult, RelationshipQueryResult } from '@/types';
+
+Import map: aliased to relative './components/ui/scroll-area' inside of [project]/
+
+Import traces:
+  Client Component Browser:
+    ./app/(protected)/query/page.tsx [Client Component Browser]
+    ./app/(protected)/query/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./app/(protected)/query/page.tsx [Client Component SSR]
+    ./app/(protected)/query/page.tsx [Server Component]
+
+https://nextjs.org/docs/messages/module-not-found
+
+Next.js version: 16.1.6 (Turbopack)
+
+---
+
+## Error Type
+Build Error
+
+## Error Message
+Module not found: Can't resolve '@/lib/hooks/use-api'
+
+## Build Output
+./app/(protected)/query/page.tsx:20:1
+Module not found: Can't resolve '@/lib/hooks/use-api'
+  18 |     Copy
+  19 | } from 'lucide-react';
+> 20 | import { useCodeSearch, useClassHierarchy, useSymbolDefinition, useCodeFinder, useComplexityAnalysis, useRelationshipAnalysis, useLanguageQuery, useAdvancedSearch } from '@/lib/hooks/use-api';
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  21 | import { Skeleton } from '@/components/ui/skeleton';
+  22 | import { ScrollArea } from '@/components/ui/scroll-area';
+  23 | import { Separator } from '@/components/ui/separator';
+
+Import map: aliased to relative './lib/hooks/use-api' inside of [project]/
+
+Import traces:
+  Client Component Browser:
+    ./app/(protected)/query/page.tsx [Client Component Browser]
+    ./app/(protected)/query/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./app/(protected)/query/page.tsx [Client Component SSR]
+    ./app/(protected)/query/page.tsx [Server Component]
+
+https://nextjs.org/docs/messages/module-not-found
+
+Next.js version: 16.1.6 (Turbopack)
+
+> frontend@0.1.0 dev
+> next dev
+
+▲ Next.js 16.1.6 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://127.0.2.2:3000
+- Environments: .env.local
+
+✓ Starting...
+✓ Ready in 788ms
+⨯ ./app/(protected)/query/page.tsx:20:1
+Module not found: Can't resolve '@/lib/hooks/use-api'
+  18 |     Copy
+  19 | } from 'lucide-react';
+> 20 | import { useCodeSearch, useClassHierarchy, useSymbolDefinition, useCodeFinder, useComplexityAnalysis, useRelationshipAnalysis, useLanguageQuery, useAdvancedSearch } from '@/lib/hooks/use-api';
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  21 | import { Skeleton } from '@/components/ui/skeleton';
+  22 | import { ScrollArea } from '@/components/ui/scroll-area';
+  23 | import { Separator } from '@/components/ui/separator';
+
+Import map: aliased to relative './lib/hooks/use-api' inside of [project]/
+
+
+Import traces:
+  Client Component Browser:
+    ./app/(protected)/query/page.tsx [Client Component Browser]
+    ./app/(protected)/query/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./app/(protected)/query/page.tsx [Client Component SSR]
+    ./app/(protected)/query/page.tsx [Server Component]
+
+https://nextjs.org/docs/messages/module-not-found
+
+
+
+./app/(protected)/query/page.tsx:20:1
+Module not found: Can't resolve '@/lib/hooks/use-api'
+  18 |     Copy
+  19 | } from 'lucide-react';
+> 20 | import { useCodeSearch, useClassHierarchy, useSymbolDefinition, useCodeFinder, useComplexityAnalysis, useRelationshipAnalysis, useLanguageQuery, useAdvancedSearch } from '@/lib/hooks/use-api';
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  21 | import { Skeleton } from '@/components/ui/skeleton';
+  22 | import { ScrollArea } from '@/components/ui/scroll-area';
+  23 | import { Separator } from '@/components/ui/separator';
+
+Import map: aliased to relative './lib/hooks/use-api' inside of [project]/
+
+
+Import traces:
+  Client Component Browser:
+    ./app/(protected)/query/page.tsx [Client Component Browser]
+    ./app/(protected)/query/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./app/(protected)/query/page.tsx [Client Component SSR]
+    ./app/(protected)/query/page.tsx [Server Component]
+
+https://nextjs.org/docs/messages/module-not-found
+
+
+
+./app/(protected)/query/page.tsx:26:1
+Export default doesn't exist in target module
+  24 | import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+  25 | import type { SearchResult, ClassHierarchy, SymbolDefinition, CodeFinderResult, RelatedCodeResult, ComplexityResult, LanguageSymbolResult, RelationshipQueryResult } from '@/types';
+> 26 | import api from '@/lib/api';
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  27 | import { toast } from 'sonner';
+  28 |
+  29 | export default function QueryPage() {
+
+The export default was not found in module [project]/lib/api.ts [app-client] (ecmascript).
+Did you mean to import deleteRepository?
+All exports of the module are statically known (It doesn't have dynamic exports). So it's known statically that the requested export doesn't exist.
+
+Import traces:
+  Client Component Browser:
+    ./app/(protected)/query/page.tsx [Client Component Browser]
+    ./app/(protected)/query/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./app/(protected)/query/page.tsx [Client Component SSR]
+    ./app/(protected)/query/page.tsx [Server Component]
+
+
+
+./app/(protected)/query/page.tsx:26:1
+Export default doesn't exist in target module
+  24 | import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+  25 | import type { SearchResult, ClassHierarchy, SymbolDefinition, CodeFinderResult, RelatedCodeResult, ComplexityResult, LanguageSymbolResult, RelationshipQueryResult } from '@/types';
+> 26 | import api from '@/lib/api';
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  27 | import { toast } from 'sonner';
+  28 |
+  29 | export default function QueryPage() {
+
+The export default was not found in module [project]/lib/api.ts [app-ssr] (ecmascript).
+Did you mean to import deleteRepository?
+All exports of the module are statically known (It doesn't have dynamic exports). So it's known statically that the requested export doesn't exist.
+
+Import traces:
+  Client Component Browser:
+    ./app/(protected)/query/page.tsx [Client Component Browser]
+    ./app/(protected)/query/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./app/(protected)/query/page.tsx [Client Component SSR]
+    ./app/(protected)/query/page.tsx [Server Component]
+
+
+ GET /query 500 in 3.0s (compile: 2.9s, render: 126ms)

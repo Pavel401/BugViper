@@ -3,15 +3,21 @@
   "checkpoint_id": "92d85572a260",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 5,
+  "checkpoints_count": 9,
   "files_touched": [
+    ".gitignore",
     "CYPHER_GUIDE.md",
     "Claude.md",
     "api/routers/query.py",
+    "count_lines.sh",
     "db/queries.py",
     "db/schema.py",
     "frontend/app/(protected)/query/page.tsx",
-    "frontend/lib/api.ts"
+    "frontend/components/ui/scroll-area.tsx",
+    "frontend/components/ui/separator.tsx",
+    "frontend/lib/api.ts",
+    "frontend/lib/hooks/use-api.ts",
+    "frontend/types/index.ts"
   ],
   "sessions": [
     {
@@ -20,13 +26,20 @@
       "context": "/92/d85572a260/0/context.md",
       "content_hash": "/92/d85572a260/0/content_hash.txt",
       "prompt": "/92/d85572a260/0/prompt.txt"
+    },
+    {
+      "metadata": "/92/d85572a260/1/metadata.json",
+      "transcript": "/92/d85572a260/1/full.jsonl",
+      "context": "/92/d85572a260/1/context.md",
+      "content_hash": "/92/d85572a260/1/content_hash.txt",
+      "prompt": "/92/d85572a260/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 69,
-    "cache_creation_tokens": 152378,
-    "cache_read_tokens": 5631615,
-    "output_tokens": 20148,
-    "api_call_count": 53
+    "input_tokens": 143,
+    "cache_creation_tokens": 213698,
+    "cache_read_tokens": 7855770,
+    "output_tokens": 30446,
+    "api_call_count": 104
   }
 }
