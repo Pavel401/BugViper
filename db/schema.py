@@ -811,22 +811,32 @@ CYPHER_QUERIES = {
     "search_code": """
         CALL db.index.fulltext.queryNodes('code_search', $search_term)
         YIELD node, score
-        MATCH (f:File)-[:DEFINES*1..2]->(node)
-        RETURN node, labels(node)[0] as type, f.path as file, score
+        OPTIONAL MATCH (f:File)-[:CONTAINS]->(node)
+        RETURN
+            CASE WHEN node:Function THEN 'function'
+                 WHEN node:Class THEN 'class'
+                 ELSE 'variable' END as type,
+            node.name as name,
+            coalesce(f.path, node.path) as path,
+            coalesce(node.line_number, 0) as line_number,
+            score
         ORDER BY score DESC
         LIMIT 20
     """,
 
     "search_symbols": """
-        CALL db.index.fulltext.queryNodes('symbol_search', $search_term)
+        CALL db.index.fulltext.queryNodes('code_search', $search_term)
         YIELD node, score
-        RETURN node.name as name,
-               node.qualified_name as qualified_name,
-               node.type as type,
-               node.file_id as file_id,
-               node.line_start as line,
-               node.visibility as visibility,
-               score
+        WHERE node:Function OR node:Class OR node:Variable
+        OPTIONAL MATCH (f:File)-[:CONTAINS]->(node)
+        RETURN
+            node.name as name,
+            CASE WHEN node:Function THEN 'function'
+                 WHEN node:Class THEN 'class'
+                 ELSE 'variable' END as type,
+            coalesce(f.path, node.path) as path,
+            coalesce(node.line_number, 0) as line_number,
+            score
         ORDER BY score DESC
         LIMIT $limit
     """,

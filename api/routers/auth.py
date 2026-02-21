@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# ── Request / Response Schemas ────────────────────────────────────────────────
 
 
 class LoginRequest(BaseModel):

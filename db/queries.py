@@ -275,47 +275,144 @@ class CodeQueryService:
     # Search Operations
     # =========================================================================
     
+    # Python/JS keywords that should not be used as search identifiers
+    _CODE_KEYWORDS = frozenset({
+        'class', 'def', 'import', 'from', 'return', 'self', 'cls', 'None',
+        'True', 'False', 'and', 'or', 'not', 'in', 'is', 'if', 'else',
+        'elif', 'for', 'while', 'try', 'except', 'with', 'as', 'pass',
+        'break', 'continue', 'raise', 'yield', 'async', 'await', 'lambda',
+        'function', 'const', 'let', 'var', 'new', 'this', 'super',
+    })
+
+    def _extract_identifiers(self, query: str) -> List[str]:
+        """Extract meaningful code identifiers from a raw query string."""
+        tokens = re.findall(r'\b[A-Za-z_][A-Za-z0-9_]{2,}\b', query)
+        seen: set = set()
+        result = []
+        for t in tokens:
+            if t not in self._CODE_KEYWORDS and t not in seen:
+                seen.add(t)
+                result.append(t)
+        return result
+
     def _escape_lucene_query(self, query: str) -> str:
         """
-        Escape Lucene special characters in search query.
+        Build a safe Lucene query string.
 
-        Strategy: Wrap the entire query in quotes to treat it as a literal phrase search.
-        This prevents Lucene from interpreting special characters.
-
-        For complex queries, users can use wildcards: *
+        Strategy:
+        - Simple identifier (word chars only) → phrase search  e.g. "LoginRequest"
+        - Complex query with special chars     → AND-keyword strategy
+          e.g. "class GitHubRepo(BaseModel)" → "GitHubRepo" AND "BaseModel"
+          This avoids Lucene parse errors while still matching meaningful tokens.
         """
         query = query.strip()
-
-        # If query is empty, return a wildcard
         if not query:
             return '*'
 
-        # If the query already has quotes, escape internal quotes
-        if '"' in query:
-            # Escape any existing quotes and wrap in quotes
-            query = query.replace('"', '\\"')
+        # Simple identifier — use phrase search directly
+        if re.match(r'^[A-Za-z0-9_]+$', query):
+            return f'"{query}"'
 
-        # Wrap in quotes to make it a literal phrase search
-        # This treats special characters as literals
-        return f'"{query}"'
+        # Complex query — extract identifiers and build AND search
+        identifiers = self._extract_identifiers(query)
+        if identifiers:
+            # Cap at 3 identifiers to keep the query lean
+            return ' AND '.join(f'"{t}"' for t in identifiers[:3])
 
-    def search_code(self, search_term: str) -> List[Dict[str, Any]]:
-        """Search for code by name or docstring."""
-        # Escape Lucene special characters to prevent query parsing errors
-        escaped_term = self._escape_lucene_query(search_term)
+        # Pure symbols / numbers with no useful identifiers — wrap and hope for best
+        escaped = query.replace('"', '\\"')
+        return f'"{escaped}"'
 
-        query = CYPHER_QUERIES["search_code"]
-        records, _, _ = self.db.run_query(query, {"search_term": escaped_term})
+    def _name_contains_fallback(
+        self,
+        search_term: str,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """
+        CONTAINS fallback against node names.
+        Uses the primary identifier extracted from the search term so that
+        queries like 'class GitHubRepo(BaseModel)' still find 'GitHubRepo'.
+        """
+        identifiers = self._extract_identifiers(search_term)
+        # Use the first (longest) identifier, falling back to raw term
+        name_term = max(identifiers, key=len) if identifiers else search_term
 
+        fallback = """
+        MATCH (node)
+        WHERE (node:Function OR node:Class OR node:Variable)
+          AND node.name CONTAINS $name_term
+        OPTIONAL MATCH (f:File)-[:CONTAINS]->(node)
+        RETURN
+            CASE WHEN node:Function THEN 'function'
+                 WHEN node:Class THEN 'class'
+                 ELSE 'variable' END as type,
+            node.name as name,
+            coalesce(f.path, node.path) as path,
+            coalesce(node.line_number, 0) as line_number,
+            1.0 as score
+        ORDER BY node.name
+        LIMIT $limit
+        """
+        records, _, _ = self.db.run_query(fallback, {"name_term": name_term, "limit": limit})
         return [
             {
-                "node": dict(record["node"]) if record["node"] else None,
                 "type": record["type"],
-                "file": record["file"],
-                "score": record["score"]
+                "name": record["name"],
+                "path": record["path"],
+                "line_number": record["line_number"],
+                "score": record["score"],
             }
             for record in records
         ]
+
+    def search_code(self, search_term: str) -> List[Dict[str, Any]]:
+        """
+        Search for code using a three-tier strategy:
+        1. code_search fulltext index (symbols: name, docstring, source_code)
+        2. Name CONTAINS fallback (uses primary extracted identifier)
+        3. File content line search (file_content_search / source_code CONTAINS)
+        Returns lean results: type, name, path, line_number, score.
+        """
+        escaped_term = self._escape_lucene_query(search_term)
+
+        # Tier 1 — fulltext symbol search
+        results: List[Dict[str, Any]] = []
+        try:
+            records, _, _ = self.db.run_query(
+                CYPHER_QUERIES["search_code"], {"search_term": escaped_term}
+            )
+            results = [
+                {
+                    "type": record["type"],
+                    "name": record["name"],
+                    "path": record["path"],
+                    "line_number": record["line_number"],
+                    "score": record["score"],
+                }
+                for record in records
+            ]
+        except Exception as e:
+            logger.warning("code_search fulltext failed: %s", e)
+
+        # Tier 2 — name CONTAINS (works even when fulltext index misses)
+        if not results:
+            results = self._name_contains_fallback(search_term, limit=20)
+
+        # Tier 3 — file content line search (raw code snippets, declarations, etc.)
+        if not results:
+            file_hits = self.search_file_content(search_term, limit=20)
+            results = [
+                {
+                    "type": "line",
+                    "name": h["match_line"].strip(),
+                    "path": h["path"],
+                    "line_number": h["line_number"],
+                    "score": 0.5,
+                }
+                for h in file_hits
+            ]
+
+        return results
 
     def search_symbols(
         self,
@@ -323,33 +420,167 @@ class CodeQueryService:
         limit: int = 20
     ) -> List[Dict[str, Any]]:
         """
-        Search symbols using fulltext index.
-
-        Args:
-            search_term: Search query (supports fuzzy matching)
-            limit: Maximum results to return
-
-        Returns:
-            List of matching symbols with scores
+        Search symbols (Function/Class/Variable) using fulltext index.
+        Falls back to name CONTAINS using the primary extracted identifier.
         """
-        query = CYPHER_QUERIES["search_symbols"]
-        records, _, _ = self.db.run_query(query, {
-            "search_term": search_term,
-            "limit": limit
-        })
+        escaped_term = self._escape_lucene_query(search_term)
 
+        results: List[Dict[str, Any]] = []
+        try:
+            records, _, _ = self.db.run_query(
+                CYPHER_QUERIES["search_symbols"],
+                {"search_term": escaped_term, "limit": limit},
+            )
+            results = [
+                {
+                    "name": record["name"],
+                    "type": record["type"],
+                    "path": record["path"],
+                    "line_number": record["line_number"],
+                    "score": record["score"],
+                }
+                for record in records
+            ]
+        except Exception as e:
+            logger.warning("symbol fulltext search failed: %s", e)
+
+        if not results:
+            raw = self._name_contains_fallback(search_term, limit=limit)
+            # _name_contains_fallback returns same shape, just reorder keys
+            results = [
+                {
+                    "name": r["name"],
+                    "type": r["type"],
+                    "path": r["path"],
+                    "line_number": r["line_number"],
+                    "score": r["score"],
+                }
+                for r in raw
+            ]
+
+        return results
+
+    # Skip files larger than this (bytes) in content search — avoids scanning minified/generated files
+    _MAX_FILE_BYTES = 500_000
+
+    def search_file_content(self, search_term: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        Search file source code line by line — all scanning runs server-side in Cypher.
+
+        Tier A: file_content_search fulltext index → split + unwind + CONTAINS in Neo4j.
+        Tier B: source_code CONTAINS fallback (also server-side split/unwind).
+
+        Files larger than 500 KB are skipped to avoid exploding intermediate row counts.
+        Only matching lines are returned over the wire (not full source blobs).
+        """
+        escaped_term = self._escape_lucene_query(search_term)
+        limit = min(limit, 200)
+
+        # Tier A — fulltext to locate candidate files, then server-side line scan
+        try:
+            ft_query = """
+            CALL db.index.fulltext.queryNodes('file_content_search', $search_term) YIELD node, score
+            WHERE node.source_code IS NOT NULL
+              AND size(node.source_code) < $max_bytes
+            WITH node, score, split(node.source_code, '\n') as lines
+            LIMIT 10
+            UNWIND range(0, size(lines) - 1) AS idx
+            WITH node.path AS path, lines[idx] AS line_content, idx + 1 AS line_number, score
+            WHERE toLower(line_content) CONTAINS toLower($raw_term)
+            RETURN path, line_number, line_content AS match_line
+            ORDER BY score DESC, path, line_number
+            LIMIT $limit
+            """
+            records, _, _ = self.db.run_query(ft_query, {
+                "search_term": escaped_term,
+                "raw_term": search_term,
+                "max_bytes": self._MAX_FILE_BYTES,
+                "limit": limit,
+            })
+            results = [
+                {
+                    "path": r["path"],
+                    "line_number": r["line_number"],
+                    "match_line": r["match_line"].rstrip() if r["match_line"] else "",
+                }
+                for r in records
+            ]
+            if results:
+                return results
+        except Exception as e:
+            logger.warning("file_content_search fulltext failed: %s", e)
+
+        # Tier B — CONTAINS on source_code, server-side split/unwind (no Python scanning)
+        fallback_query = """
+        MATCH (f:File)
+        WHERE f.source_code IS NOT NULL
+          AND f.source_code CONTAINS $raw_term
+          AND size(f.source_code) < $max_bytes
+        WITH f, split(f.source_code, '\n') AS lines
+        LIMIT 5
+        UNWIND range(0, size(lines) - 1) AS idx
+        WITH f.path AS path, lines[idx] AS line_content, idx + 1 AS line_number
+        WHERE line_content CONTAINS $raw_term
+        RETURN path, line_number, line_content AS match_line
+        ORDER BY path, line_number
+        LIMIT $limit
+        """
+        records, _, _ = self.db.run_query(fallback_query, {
+            "raw_term": search_term,
+            "max_bytes": self._MAX_FILE_BYTES,
+            "limit": limit,
+        })
         return [
             {
-                "name": record["name"],
-                "qualified_name": record["qualified_name"],
-                "type": record["type"],
-                "file_id": record["file_id"],
-                "line": record["line"],
-                "visibility": record["visibility"],
-                "score": record["score"]
+                "path": r["path"],
+                "line_number": r["line_number"],
+                "match_line": r["match_line"].rstrip() if r["match_line"] else "",
             }
-            for record in records
+            for r in records
         ]
+
+    def peek_file_lines(
+        self,
+        path: str,
+        line: int,
+        above: int = 10,
+        below: int = 10,
+    ) -> Dict[str, Any]:
+        """
+        Return a window of lines around `line` in the given file.
+        Lines are 1-indexed. The anchor line is flagged with is_anchor=True.
+        Files > 2 MB are rejected to prevent memory spikes.
+        """
+        query = """
+        MATCH (f:File {path: $path})
+        WHERE f.source_code IS NOT NULL AND size(f.source_code) < 2000000
+        RETURN f.source_code as source_code
+        LIMIT 1
+        """
+        records, _, _ = self.db.run_query(query, {"path": path})
+        if not records or not records[0].get("source_code"):
+            return {"error": "File not found or too large", "path": path}
+
+        lines = records[0]["source_code"].split("\n")
+        total = len(lines)
+        start = max(0, line - above - 1)   # 0-indexed inclusive
+        end = min(total, line + below)       # 0-indexed exclusive
+
+        window = [
+            {
+                "line_number": i + 1,
+                "content": lines[i],
+                "is_anchor": (i + 1) == line,
+            }
+            for i in range(start, end)
+        ]
+
+        return {
+            "path": path,
+            "anchor_line": line,
+            "window": window,
+            "total_lines": total,
+        }
 
     def find_symbol_by_qualified_name(
         self,

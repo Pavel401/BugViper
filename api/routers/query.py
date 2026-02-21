@@ -2,10 +2,9 @@
 Code query endpoints - Advanced implementation with Neo4j integration.
 """
 
-from fastapi import APIRouter, HTTPException, Query, Depends, Body
+from fastapi import APIRouter, HTTPException, Query, Depends
 from pydantic import BaseModel
-from typing import Dict, Any, List, Optional
-import os
+from typing import Dict, Any, List
 
 from db.client import Neo4jClient
 from db.queries import CodeQueryService
@@ -27,52 +26,35 @@ def get_code_finder(db: Neo4jClient = Depends(get_neo4j_client)) -> CodeFinder:
 
 @router.get("/search")
 async def search_code(
-    query: str = Query(..., description="Search term for code"),
-    repo_id: str = Query(None, description="Optional repository ID to filter by"),
+    query: str = Query(..., description="Search term — any identifier, snippet, or keyword"),
+    limit: int = Query(30, description="Maximum results to return"),
     query_service: CodeQueryService = Depends(get_query_service)
 ) -> Dict[str, Any]:
     """
-    Search for code by content or name using fulltext search.
+    Unified code search.
+
+    Three-tier strategy:
+    1. Fulltext index on symbols (name, docstring, source_code)
+    2. Name CONTAINS fallback (uses primary extracted identifier)
+    3. File content line search (file_content_search / source_code CONTAINS)
+
+    Results include type ('function' | 'class' | 'variable' | 'line'),
+    name, path, line_number, and score. Symbol results come first
+    (higher score), file-content line matches follow.
     """
+    if len(query) > 500:
+        raise HTTPException(status_code=400, detail="Query too long (max 500 characters)")
     try:
         results = query_service.search_code(query)
-        
-        # Filter by repo if provided
-        if repo_id:
-            filtered_results = []
-            for result in results:
-                if result.get('file', {}).get('repo_id') == repo_id:
-                    filtered_results.append(result)
-            results = filtered_results
-        
+        if limit:
+            results = results[:limit]
         return {
             "results": results,
             "total": len(results),
             "query": query,
-            "repo_filter": repo_id
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
-
-
-@router.get("/search-symbols")
-async def search_symbols(
-    query: str = Query(..., description="Search term for symbols"),
-    limit: int = Query(20, description="Maximum number of results"),
-    query_service: CodeQueryService = Depends(get_query_service)
-) -> Dict[str, Any]:
-    """
-    Search for symbols (functions, classes, variables) by name.
-    """
-    try:
-        results = query_service.search_symbols(query, limit)
-        return {
-            "symbols": results,
-            "total": len(results),
-            "query": query
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Symbol search failed: {str(e)}")
 
 
 @router.get("/method-usages")
@@ -505,6 +487,60 @@ async def find_most_complex_functions(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Complex function search failed: {str(e)}")
+
+
+@router.get("/code-finder/line")
+async def find_by_line(
+    query: str = Query(..., description="Search term to find in file content"),
+    limit: int = Query(50, description="Maximum number of line matches to return"),
+    query_service: CodeQueryService = Depends(get_query_service),
+) -> Dict[str, Any]:
+    """
+    Search raw file content line-by-line.
+    Uses file_content_search fulltext index (falls back to CONTAINS).
+    Returns path + line_number + match_line for each hit — no source dumps.
+    Pair with /code-finder/peek to view context around a hit.
+    """
+    if len(query) > 500:
+        raise HTTPException(status_code=400, detail="Query too long (max 500 characters)")
+    limit = min(limit, 100)  # hard cap
+    try:
+        results = query_service.search_file_content(query, limit)
+        return {
+            "query": query,
+            "results": results,
+            "total": len(results),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Line search failed: {str(e)}")
+
+
+@router.get("/code-finder/peek")
+async def peek_file_lines(
+    path: str = Query(..., description="Absolute file path (as stored in graph)"),
+    line: int = Query(..., description="Anchor line number (1-indexed)"),
+    above: int = Query(10, description="Lines to show above the anchor"),
+    below: int = Query(10, description="Lines to show below the anchor"),
+    query_service: CodeQueryService = Depends(get_query_service),
+) -> Dict[str, Any]:
+    """
+    Return a window of lines around a given line in a file.
+    The anchor line is flagged with is_anchor=true.
+    Use above/below to control the context window size.
+    """
+    above = min(above, 200)   # hard cap — prevents fetching entire file as "context"
+    below = min(below, 200)
+    if line < 1:
+        raise HTTPException(status_code=400, detail="line must be >= 1")
+    try:
+        result = query_service.peek_file_lines(path, line, above, below)
+        if "error" in result:
+            raise HTTPException(status_code=404, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Peek failed: {str(e)}")
 
 
 @router.get("/code-finder/relationships")
