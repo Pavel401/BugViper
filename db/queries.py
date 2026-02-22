@@ -133,27 +133,20 @@ class CodeQueryService:
 
         results = []
         for record in records:
-            # Convert Neo4j Node objects to dictionaries for JSON serialization
             callers = []
             for caller_dict in record["callers"]:
                 if caller_dict and caller_dict.get("caller"):
+                    caller_node = caller_dict["caller"]
                     callers.append({
-                        "caller": dict(caller_dict["caller"]) if hasattr(caller_dict["caller"], "__iter__") and not isinstance(caller_dict["caller"], str) else {"name": str(caller_dict["caller"])},
-                        "line": caller_dict.get("line")
-                    })
-
-            references = []
-            for ref_dict in record["references"]:
-                if ref_dict and ref_dict.get("line"):
-                    references.append({
-                        "line": dict(ref_dict["line"]) if hasattr(ref_dict["line"], "__iter__") and not isinstance(ref_dict["line"], str) else {"line": str(ref_dict["line"])},
-                        "col_start": ref_dict.get("col_start")
+                        "caller": dict(caller_node),
+                        "line": caller_dict.get("line"),
+                        "file": caller_dict.get("file"),
                     })
 
             results.append({
                 "method": dict(record["m"]) if record["m"] else None,
+                "file": record.get("file_path"),
                 "callers": callers,
-                "references": references
             })
         return {"usages": results}
     
@@ -174,38 +167,180 @@ class CodeQueryService:
             }
         return {}
     
-    def find_callers(self, symbol_name: str) -> List[Dict[str, Any]]:
-        """Find all methods/functions that call a specific symbol."""
-        query = CYPHER_QUERIES["find_callers"]
-        records, _, _ = self.db.run_query(query, {"name": symbol_name})
-        
-        return [
+    def find_callers(self, symbol_name: str) -> Dict[str, Any]:
+        """Find all methods/functions that call a specific symbol.
+
+        Returns the symbol's definition(s) and call-graph callers.
+        Falls back to source_code text search when no CALLS edges exist.
+        """
+        # 1. Fetch definition(s)
+        def_records, _, _ = self.db.run_query(
+            CYPHER_QUERIES["find_function_definition"], {"name": symbol_name}
+        )
+        definitions = [dict(r) for r in def_records]
+
+        # 2. Call-graph edges
+        call_records, _, _ = self.db.run_query(
+            CYPHER_QUERIES["find_callers"], {"name": symbol_name}
+        )
+        callers: List[Dict[str, Any]] = [
             {
-                "caller": record["caller_name"],
-                "type": record["caller_type"],
-                "file": record["file_path"],
-                "line": record["call_line"]
+                "caller": r["caller_name"],
+                "type": r["caller_type"],
+                "file": r["file_path"],
+                "line": r["call_line"],
+                "source": "call_graph",
+                "source_code": r.get("source_code"),
             }
-            for record in records
+            for r in call_records
         ]
+
+        # 3. File-content fallback when no CALLS edges exist.
+        #    Parses File.source_code in Python to find exact call lines, then
+        #    maps each line to its containing Function by line number ordering.
+        #    The definition file is excluded to avoid sibling-function noise.
+        fallback_used = False
+        if not callers:
+            def_files = {d["file_path"] for d in definitions if d.get("file_path")}
+            callers = self._find_callers_by_file_content(symbol_name, def_files)
+            fallback_used = bool(callers)
+
+        return {
+            "callers": callers,
+            "symbol": symbol_name,
+            "total": len(callers),
+            "definitions": definitions,
+            "fallback_used": fallback_used,
+        }
     
+    def _find_callers_by_file_content(
+        self, symbol_name: str, exclude_file_paths: set
+    ) -> List[Dict[str, Any]]:
+        """Find callers by parsing File.source_code content.
+
+        Strategy:
+          1. Find files whose source_code contains '<symbol_name>(' (the call syntax),
+             excluding the file(s) where the symbol is defined.
+          2. For each matching file, scan line-by-line to find exact call lines
+             (skipping `def` lines which contain the name but aren't calls).
+          3. Load the functions defined in each matching file (ordered by start line).
+          4. Map each call line to its containing function by finding the function
+             whose start_line is the largest value <= the call line.
+          5. Extract the function's source from the file content using start/end lines.
+        """
+        call_pattern = f"{symbol_name}("
+
+        file_query = """
+            MATCH (f:File)
+            WHERE f.source_code CONTAINS $call_pattern
+              AND NOT f.path IN $exclude_paths
+              AND (f.is_dependency IS NULL OR f.is_dependency = false)
+            RETURN f.path AS file_path, f.source_code AS source_code
+            LIMIT 10
+        """
+        file_records, _, _ = self.db.run_query(file_query, {
+            "call_pattern": call_pattern,
+            "exclude_paths": list(exclude_file_paths),
+        })
+
+        callers: List[Dict[str, Any]] = []
+        for file_record in file_records:
+            file_path: str = file_record["file_path"]
+            source_code: str = file_record.get("source_code") or ""
+            if not source_code:
+                continue
+
+            # Find lines that contain a genuine call (not the def line itself)
+            lines = source_code.split("\n")
+            call_lines = [
+                i + 1  # 1-indexed
+                for i, line in enumerate(lines)
+                if call_pattern in line and not line.lstrip().startswith("def ")
+            ]
+            if not call_lines:
+                continue
+
+            # Load functions in this file, sorted by start line
+            func_query = """
+                MATCH (f:File {path: $file_path})-[:CONTAINS]->(func:Function)
+                WHERE func.name <> $name AND func.line_number IS NOT NULL
+                RETURN func.name AS func_name, func.line_number AS line_number
+                ORDER BY func.line_number
+            """
+            func_records, _, _ = self.db.run_query(func_query, {
+                "file_path": file_path,
+                "name": symbol_name,
+            })
+            funcs = [(r["func_name"], int(r["line_number"])) for r in func_records]
+            if not funcs:
+                continue
+
+            # Build a quick lookup: func_name → (start_line, end_line)
+            func_ranges: Dict[str, tuple] = {}
+            for idx, (fname, fstart) in enumerate(funcs):
+                fend = funcs[idx + 1][1] - 1 if idx + 1 < len(funcs) else len(lines)
+                func_ranges[fname] = (fstart, fend)
+
+            seen: set = set()
+            for call_line in call_lines:
+                # The containing function is the one with the largest start_line <= call_line
+                containing: Optional[tuple] = None
+                for fname, fstart in funcs:
+                    if fstart <= call_line:
+                        containing = (fname, fstart)
+                    else:
+                        break  # funcs is sorted, no need to continue
+
+                if containing is None or containing[0] in seen:
+                    continue
+
+                fname, fstart = containing
+                seen.add(fname)
+                fstart_idx, fend_idx = func_ranges[fname]
+                func_source = "\n".join(lines[fstart_idx - 1 : fend_idx]).rstrip()
+
+                callers.append({
+                    "caller": fname,
+                    "type": "Function",
+                    "file": file_path,
+                    "line": call_line,
+                    "source": "text_reference",
+                    "source_code": func_source or None,
+                })
+
+        return callers
+
     # =========================================================================
     # Class Queries
     # =========================================================================
-    
+
     def get_class_hierarchy(self, class_name: str) -> Dict[str, Any]:
         """Get the inheritance hierarchy of a class."""
         query = CYPHER_QUERIES["get_class_hierarchy"]
         records, _, _ = self.db.run_query(query, {"class_name": class_name})
-        
-        if records:
-            record = records[0]
-            return {
-                "class": dict(record["c"]) if record["c"] else None,
-                "ancestors": [dict(n) for n in record["ancestors"]] if record["ancestors"] else [],
-                "descendants": [dict(n) for n in record["descendants"]] if record["descendants"] else []
-            }
-        return {}
+
+        if not records:
+            return {"class_name": class_name, "found": False, "ancestors": [], "descendants": []}
+
+        record = records[0]
+
+        def clean_nodes(nodes: list) -> list:
+            """Filter out null/empty map entries from collect(DISTINCT {...})."""
+            return [
+                dict(n) for n in (nodes or [])
+                if n and n.get("name")
+            ]
+
+        return {
+            "class_name": record.get("class_name"),
+            "file_path": record.get("file_path"),
+            "line_number": record.get("line_number"),
+            "docstring": record.get("docstring"),
+            "source_code": record.get("source_code"),
+            "found": True,
+            "ancestors": clean_nodes(record["ancestors"]),
+            "descendants": clean_nodes(record["descendants"]),
+        }
     
     # =========================================================================
     # File Queries

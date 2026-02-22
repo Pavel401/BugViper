@@ -632,12 +632,13 @@ CYPHER_QUERIES = {
     # Query Operations
     # -------------------------------------------------------------------------
     "find_method_usages": """
-        MATCH (m:Method {name: $method_name})
-        OPTIONAL MATCH (caller)-[call:CALLS]->(m)
-        OPTIONAL MATCH (cl:CodeLine)-[ref:REFERENCES]->(m)
-        RETURN m, 
-               collect(DISTINCT {caller: caller, line: call.line_number}) as callers,
-               collect(DISTINCT {line: cl, col_start: ref.column_start}) as references
+        MATCH (m:Function {name: $method_name})
+        OPTIONAL MATCH (f:File)-[:CONTAINS]->(m)
+        OPTIONAL MATCH (caller:Function)-[call:CALLS]->(m)
+        OPTIONAL MATCH (caller_file:File)-[:CONTAINS]->(caller)
+        RETURN m, f.path as file_path,
+               collect(DISTINCT {caller: caller, line: call.line_number, file: caller_file.path}) as callers,
+               [] as references
     """,
     
     "find_method_context": """
@@ -651,23 +652,67 @@ CYPHER_QUERIES = {
                m.line_start as start_line, m.line_end as end_line
     """,
     
+    "find_function_definition": """
+        MATCH (m)
+        WHERE (m:Function OR m:Class) AND m.name = $name
+        OPTIONAL MATCH (f:File)-[:CONTAINS]->(m)
+        OPTIONAL MATCH (f2:File)-[:DEFINES]->(m)
+        OPTIONAL MATCH (cls:Class)-[:CONTAINS]->(m)
+        RETURN m.name as name,
+               coalesce(m.line_number, m.line_start) as line_number,
+               coalesce(m.end_line_number, m.line_end) as end_line_number,
+               m.docstring as docstring,
+               m.cyclomatic_complexity as complexity,
+               coalesce(m.source_code, m.source) as source_code,
+               coalesce(f.path, f2.path) as file_path,
+               coalesce(f.relative_path, f2.relative_path) as relative_path,
+               cls.name as class_name,
+               labels(m)[0] as symbol_type
+        ORDER BY coalesce(f.path, f2.path)
+        LIMIT 5
+    """,
+
     "find_callers": """
         MATCH (m {name: $name})
-        WHERE m:Method OR m:Function OR m:Class
+        WHERE m:Function OR m:Class
         MATCH (caller)-[c:CALLS]->(m)
-        MATCH (f:File)-[:DEFINES*1..2]->(caller)
+        OPTIONAL MATCH (f:File)-[:CONTAINS]->(caller)
         RETURN caller.name as caller_name, labels(caller)[0] as caller_type,
-               f.path as file_path, c.line_number as call_line
+               f.path as file_path, c.line_number as call_line,
+               caller.source_code as source_code
         ORDER BY f.path, c.line_number
     """,
+
     
     "get_class_hierarchy": """
         MATCH (c:Class {name: $class_name})
-        OPTIONAL MATCH path = (c)-[:INHERITS*]->(parent:Class)
-        OPTIONAL MATCH child_path = (child:Class)-[:INHERITS*]->(c)
-        RETURN c, 
-               collect(DISTINCT nodes(path)) as ancestors,
-               collect(DISTINCT nodes(child_path)) as descendants
+        OPTIONAL MATCH (self_file:File)-[:CONTAINS]->(c)
+        OPTIONAL MATCH (self_file2:File)-[:DEFINES]->(c)
+        OPTIONAL MATCH (c)-[:INHERITS*]->(ancestor:Class)
+        OPTIONAL MATCH (ancestor_file:File)-[:CONTAINS]->(ancestor)
+        OPTIONAL MATCH (ancestor_file2:File)-[:DEFINES]->(ancestor)
+        OPTIONAL MATCH (descendant:Class)-[:INHERITS*]->(c)
+        OPTIONAL MATCH (descendant_file:File)-[:CONTAINS]->(descendant)
+        OPTIONAL MATCH (descendant_file2:File)-[:DEFINES]->(descendant)
+        RETURN c.name as class_name,
+               coalesce(c.line_number, c.line_start) as line_number,
+               c.docstring as docstring,
+               coalesce(c.source_code, c.source) as source_code,
+               coalesce(self_file.path, self_file2.path) as file_path,
+               collect(DISTINCT {
+                   name: ancestor.name,
+                   file_path: coalesce(ancestor_file.path, ancestor_file2.path),
+                   line_number: coalesce(ancestor.line_number, ancestor.line_start),
+                   source_code: coalesce(ancestor.source_code, ancestor.source),
+                   docstring: ancestor.docstring
+               }) as ancestors,
+               collect(DISTINCT {
+                   name: descendant.name,
+                   file_path: coalesce(descendant_file.path, descendant_file2.path),
+                   line_number: coalesce(descendant.line_number, descendant.line_start),
+                   source_code: coalesce(descendant.source_code, descendant.source),
+                   docstring: descendant.docstring
+               }) as descendants
     """,
     
     "get_file_structure": """

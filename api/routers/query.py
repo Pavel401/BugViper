@@ -96,12 +96,7 @@ async def find_callers(
     Find all methods/functions that call a specific symbol.
     """
     try:
-        callers = query_service.find_callers(symbol_name)
-        return {
-            "callers": callers,
-            "symbol": symbol_name,
-            "total": len(callers)
-        }
+        return query_service.find_callers(symbol_name)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to find callers: {str(e)}")
 
@@ -162,13 +157,15 @@ async def analyze_change_impact(
     try:
         # Get all usages of the symbol to understand impact
         usages = query_service.find_method_usages(symbol_name)
-        callers = query_service.find_callers(symbol_name)
-        
+        callers_result = query_service.find_callers(symbol_name)
+        callers_list = callers_result.get("callers", [])
+
         return {
             "symbol": symbol_name,
             "usages": usages,
-            "callers": callers,
-            "impact_level": "high" if len(callers) > 5 else "medium" if len(callers) > 0 else "low"
+            "callers": callers_list,
+            "definitions": callers_result.get("definitions", []),
+            "impact_level": "high" if len(callers_list) > 5 else "medium" if len(callers_list) > 0 else "low",
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to analyze change impact: {str(e)}")
