@@ -1,0 +1,755 @@
+curl 'http://localhost:8000/api/v1/query/method-usages?method_name=create_or_update_user' \
+  -H 'Accept: */*' \
+  -H 'Accept-Language: en-US,en;q=0.9' \
+  -H 'Authorization: Bearer REDACTED.REDACTED.REDACTED' \
+  -H 'Connection: keep-alive' \
+  -H 'Content-Type: application/json' \
+  -H 'Origin: http://localhost:3000' \
+  -H 'Referer: http://localhost:3000/' \
+  -H 'Sec-Fetch-Dest: empty' \
+  -H 'Sec-Fetch-Mode: cors' \
+  -H 'Sec-Fetch-Site: same-site' \
+  -H 'User-Agent: Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Mobile Safari/537.36' \
+  -H 'sec-ch-ua: "Chromium";v="145", "Not:A-Brand";v="99"' \
+  -H 'sec-ch-ua-mobile: ?1' \
+  -H 'sec-ch-ua-platform: "Android"' why this api failed to find the method ? same for callers curl 'http://localhost:8000/api/v1/query/find_callers?symbol_name=create_or_update_user' \
+  -H 'Accept: */*' \
+  -H 'Accept-Language: en-US,en;q=0.9' \
+  -H 'Authorization: Bearer REDACTED.REDACTED.REDACTED' \
+  -H 'Connection: keep-alive' \
+  -H 'Content-Type: application/json' \
+  -H 'Origin: http://localhost:3000' \
+  -H 'Referer: http://localhost:3000/' \
+  -H 'Sec-Fetch-Dest: empty' \
+  -H 'Sec-Fetch-Mode: cors' \
+  -H 'Sec-Fetch-Site: same-site' \
+  -H 'User-Agent: Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Mobile Safari/537.36' \
+  -H 'sec-ch-ua: "Chromium";v="145", "Not:A-Brand";v="99"' \
+  -H 'sec-ch-ua-mobile: ?1' \
+  -H 'sec-ch-ua-platform: "Android"' ?
+
+---
+
+Can we improve the Ui for this http://localhost:3000/query
+
+---
+
+curl 'http://localhost:8000/api/v1/query/find_callers?symbol_name=create_or_update_user' \
+  -H 'Accept: */*' \
+  -H 'Accept-Language: en-US,en;q=0.9' \
+  -H 'Authorization: Bearer REDACTED.REDACTED.REDACTED' \
+  -H 'Connection: keep-alive' \
+  -H 'Content-Type: application/json' \
+  -H 'Origin: http://localhost:3000' \
+  -H 'Referer: http://localhost:3000/' \
+  -H 'Sec-Fetch-Dest: empty' \
+  -H 'Sec-Fetch-Mode: cors' \
+  -H 'Sec-Fetch-Site: same-site' \
+  -H 'User-Agent: Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Mobile Safari/537.36' \
+  -H 'sec-ch-ua: "Chromium";v="145", "Not:A-Brand";v="99"' \
+  -H 'sec-ch-ua-mobile: ?1' \
+  -H 'sec-ch-ua-platform: "Android"' is empty , and in the UI it should show that method and the caller method and more details
+
+---
+
+## Error Type
+Runtime TypeError
+
+## Error Message
+callers.map is not a function
+
+
+    at FindCallersView (app/(protected)/query/page.tsx:434:18)
+    at Object.renderResults (app/(protected)/query/page.tsx:660:29)
+    at GenericQueryTab (app/(protected)/query/page.tsx:772:29)
+    at eval (app/(protected)/query/page.tsx:847:13)
+    at Array.map (<anonymous>:null:null)
+    at QueryPage (app/(protected)/query/page.tsx:845:38)
+
+## Code Frame
+  432 |           </p>
+  433 |         ) : (
+> 434 |           callers.map((c, i) => {
+      |                  ^
+  435 |             const filename = c.file?.split("/").pop() ?? c.file ?? "—";
+  436 |             const dirPath  = c.file && filename !== c.file
+  437 |               ? c.file.slice(0, c.file.length - filename.length - 1)
+
+Next.js version: 16.1.6 (Turbopack)
+
+---
+
+So the method create_or_update_user() is called by the auth.py but result shows {
+    "callers": [],
+    "symbol": "create_or_update_user",
+    "total": 0,
+    "definitions": [
+        {
+            "name": "create_or_update_user",
+            "line_number": 47,
+            "end_line_number": null,
+            "docstring": null,
+            "complexity": 5,
+            "file_path": "api/services/firebase_service.py",
+            "relative_path": null,
+            "class_name": "BugViperFirebaseService",
+            "symbol_type": "Function"
+        }
+    ],
+    "fallback_used": false
+} . Also it should show the method code in defination as well and whereever used it's code content as well
+
+---
+
+{
+    "callers": [
+        {
+            "caller": "ensure_user",
+            "type": "Function",
+            "file": "api/routers/auth.py",
+            "line": null,
+            "source": "text_reference",
+            "source_code": null
+        },
+        {
+            "caller": "get_me",
+            "type": "Function",
+            "file": "api/routers/auth.py",
+            "line": null,
+            "source": "text_reference",
+            "source_code": null
+        },
+        {
+            "caller": "get_github_repos",
+            "type": "Function",
+            "file": "api/routers/auth.py",
+            "line": null,
+            "source": "text_reference",
+            "source_code": null
+        },
+        {
+            "caller": "_to_dict",
+            "type": "Function",
+            "file": "api/services/firebase_service.py",
+            "line": null,
+            "source": "text_reference",
+            "source_code": null
+        },
+        {
+            "caller": "__new__",
+            "type": "Function",
+            "file": "api/services/firebase_service.py",
+            "line": null,
+            "source": "text_reference",
+            "source_code": null
+        },
+        {
+            "caller": "__init__",
+            "type": "Function",
+            "file": "api/services/firebase_service.py",
+            "line": null,
+            "source": "text_reference",
+            "source_code": null
+        },
+        {
+            "caller": "db",
+            "type": "Function",
+            "file": "api/services/firebase_service.py",
+            "line": null,
+            "source": "text_reference",
+            "source_code": null
+        },
+        {
+            "caller": "ensure_user",
+            "type": "Function",
+            "file": "api/services/firebase_service.py",
+            "line": null,
+            "source": "text_reference",
+            "source_code": null
+        },
+        {
+            "caller": "get_user",
+            "type": "Function",
+            "file": "api/services/firebase_service.py",
+            "line": null,
+            "source": "text_reference",
+            "source_code": null
+        },
+        {
+            "caller": "get_github_token",
+            "type": "Function",
+            "file": "api/services/firebase_service.py",
+            "line": null,
+            "source": "text_reference",
+            "source_code": null
+        },
+        {
+            "caller": "upsert_repo_metadata",
+            "type": "Function",
+            "file": "api/services/firebase_service.py",
+            "line": null,
+            "source": "text_reference",
+            "source_code": null
+        },
+        {
+            "caller": "get_repo_metadata",
+            "type": "Function",
+            "file": "api/services/firebase_service.py",
+            "line": null,
+            "source": "text_reference",
+            "source_code": null
+        },
+        {
+            "caller": "delete_repo_metadata",
+            "type": "Function",
+            "file": "api/services/firebase_service.py",
+            "line": null,
+            "source": "text_reference",
+            "source_code": null
+        },
+        {
+            "caller": "list_repos",
+            "type": "Function",
+            "file": "api/services/firebase_service.py",
+            "line": null,
+            "source": "text_reference",
+            "source_code": null
+        },
+        {
+            "caller": "login",
+            "type": "Function",
+            "file": "api/routers/auth.py",
+            "line": null,
+            "source": "text_reference",
+            "source_code": null
+        }
+    ],
+    "symbol": "create_or_update_user",
+    "total": 15,
+    "definitions": [
+        {
+            "name": "create_or_update_user",
+            "line_number": 47,
+            "end_line_number": null,
+            "docstring": null,
+            "complexity": 5,
+            "source_code": null,
+            "file_path": "api/services/firebase_service.py",
+            "relative_path": null,
+            "class_name": "BugViperFirebaseService",
+            "symbol_type": "Function"
+        }
+    ],
+    "fallback_used": true
+} verify the result , I think it's wrong
+
+---
+
+is the class hierarchy and the Change Impact works ?
+
+---
+
+what can I search using this 2 ?
+
+---
+
+Class Hierarchy should have code as well .
+
+---
+
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Analysis:
+Let me chronologically analyze the conversation to create a comprehensive summary.
+
+1. **First message**: User ran curl against `/api/v1/query/method-usages?method_name=create_or_update_user` and `/api/v1/query/find_callers?symbol_name=create_or_update_user` - both failing to find the method. User wanted to know why.
+
+2. **Root cause investigation**: I read `api/routers/query.py`, `api/routers/auth.py`, `db/schema.py`, and `db/queries.py`. Found two broken Cypher queries:
+   - `find_method_usages`: matched `m:Method` (doesn't exist - class methods are `Function` nodes), used `CodeLine` nodes and `[:REFERENCES]` (don't exist)
+   - `find_callers`: used `[:DEFINES*1..2]` to get file (should be `[:CONTAINS]`)
+
+3. **UI improvement request**: User asked to improve the UI for `http://localhost:3000/query`. I explored the frontend and rewrote `page.tsx` with icons, better loading states, smart renderers for Analysis/Metrics/CodeFinder results.
+
+4. **API still empty after fix**: User showed curl returning empty for `find_callers`. I investigated further and found the `find_callers` result was being double-wrapped by the router (router was doing `{"callers": callers_dict, ...}` where `callers_dict` was already a full dict). Also added a text-based fallback using `File.source_code CONTAINS`.
+
+5. **TypeError fix**: `callers.map is not a function` - fixed by making the router return `query_service.find_callers(symbol_name)` directly instead of wrapping it.
+
+6. **Wrong fallback results**: The fallback returned 15 false positives because it searched `File.source_code CONTAINS "create_or_update_user("` and returned ALL functions from matching files (including `firebase_service.py` where the function is defined). Fixed by moving logic to Python, excluding definition files, parsing line numbers, and mapping call lines to containing functions.
+
+7. **Class Hierarchy and Change Impact**: User asked if these work. Found:
+   - Class Hierarchy: Cypher used `collect(DISTINCT nodes(path))` returning list-of-lists, Python tried `dict(n)` on each sub-list
+   - Change Impact: worked but didn't pass `definitions` to UI
+   Fixed both.
+
+8. **Class Hierarchy source code**: User requested source code to be shown in Class Hierarchy view. Added `source_code` and `docstring` to Cypher query, updated Python, and updated `ClassHierarchyView`/`HierarchyRow` components with collapsible code blocks.
+
+Key files modified:
+- `db/schema.py`: Multiple Cypher query fixes
+- `db/queries.py`: `find_method_usages`, `find_callers`, `get_class_hierarchy`, new `_find_callers_by_file_content` helper
+- `api/routers/query.py`: Fixed double-wrapping in `find_callers` and `change_impact`
+- `frontend/app/(protected)/query/page.tsx`: Complete UI rewrite with smart renderers
+
+Summary:
+1. Primary Request and Intent:
+   - **Debug failing APIs**: `method-usages` and `find_callers` endpoints both returned empty results for `create_or_update_user`
+   - **Improve Query UI**: Redesign `http://localhost:3000/query` with better visual hierarchy, icons, structured result renderers
+   - **Show function definition + callers with source code**: The `find_callers` result should show where the function is defined (with source code), and each caller's source code
+   - **Fix wrong fallback results**: Fallback was returning 15 false-positive callers (all functions from matching files)
+   - **Verify + fix Class Hierarchy and Change Impact**: Both had bugs; class hierarchy needed source code too
+   - **Class Hierarchy with source code**: Show code for the searched class, and collapsible code for ancestors/descendants
+
+2. Key Technical Concepts:
+   - **Neo4j graph schema**: `Function`, `Class`, `File`, `Variable`, `Module`, `Repository` nodes; `[:CONTAINS]`, `[:CALLS]`, `[:INHERITS]`, `[:IMPORTS]` relationships. `Method` nodes do NOT exist — class methods are `Function` nodes
+   - **Cypher queries**: Fixed broken relationship types (`[:DEFINES]` → `[:CONTAINS]`, `m:Method` → `m:Function`)
+   - **CALLS edge resolution**: Tree-sitter ingestion creates `[:CALLS]` edges at ingestion time; attribute/method calls like `firebase_service.create_or_update_user()` may not have edges if import resolution fails
+   - **Text-based fallback**: When no `[:CALLS]` edges exist, search `File.source_code CONTAINS call_pattern` (more reliable than `Function.source_code` which is often null)
+   - **Line-number mapping**: Parse file content in Python to find exact call lines, then map call line → containing function using sorted function start lines
+   - **Two-tier fulltext search**: `code_search` index (Function/Class/Variable) and `file_content_search` (File)
+   - **FastAPI dependency injection**: `get_query_service` → `CodeQueryService`
+   - **Next.js 16 + React 19**: App Router, `"use client"` directive, TailwindCSS 4, shadcn/ui
+   - **Double-wrapping bug**: Router was wrapping already-complete dict response under another key
+
+3. Files and Code Sections:
+
+   - **`db/schema.py`** — Contains all Cypher query strings in `CYPHER_QUERIES` dict
+     - Fixed `find_method_usages`: `m:Method` → `m:Function`, removed `CodeLine`/`[:REFERENCES]`, added `[:CONTAINS]` for file
+     - Fixed `find_callers`: `[:DEFINES*1..2]` → `OPTIONAL MATCH (f:File)-[:CONTAINS]->(caller)`, removed `m:Method`
+     - Added `find_function_definition`: fetches name, line_number, end_line_number, docstring, complexity, source_code, file_path, class_name
+     - Removed `find_callers_text_fallback` (moved to Python)
+     - Fixed `get_class_hierarchy`: replaced `collect(DISTINCT nodes(path))` (list-of-lists bug) with individual node property maps including `source_code` and `docstring`
+     ```cypher
+     "get_class_hierarchy": """
+         MATCH (c:Class {name: $class_name})
+         OPTIONAL MATCH (self_file:File)-[:CONTAINS]->(c)
+         OPTIONAL MATCH (c)-[:INHERITS*]->(ancestor:Class)
+         OPTIONAL MATCH (ancestor_file:File)-[:CONTAINS]->(ancestor)
+         OPTIONAL MATCH (descendant:Class)-[:INHERITS*]->(c)
+         OPTIONAL MATCH (descendant_file:File)-[:CONTAINS]->(descendant)
+         RETURN c.name as class_name, c.line_number as line_number,
+                c.docstring as docstring, c.source_code as source_code,
+                self_file.path as file_path,
+                collect(DISTINCT {
+                    name: ancestor.name, file_path: ancestor_file.path,
+                    line_number: ancestor.line_number,
+                    source_code: ancestor.source_code, docstring: ancestor.docstring
+                }) as ancestors,
+                collect(DISTINCT {
+                    name: descendant.name, file_path: descendant_file.path,
+                    line_number: descendant.line_number,
+                    source_code: descendant.source_code, docstring: descendant.docstring
+                }) as descendants
+     """
+     ```
+
+   - **`db/queries.py`** — Python query service layer
+     - Rewrote `find_method_usages`: proper node deserialization, returns `{usages: [{method, file, callers}]}`
+     - Rewrote `find_callers`: now returns `Dict` (not `List`) with `{callers, symbol, total, definitions, fallback_used}`; runs definition lookup, call-graph edges, then file-content fallback
+     - Added `_find_callers_by_file_content`: excludes definition files, parses line numbers in Python, maps call lines to containing functions, extracts function source from file content
+     - Fixed `get_class_hierarchy`: `clean_nodes()` helper filters null entries; returns flat dict with `class_name`, `file_path`, `source_code`, `ancestors`, `descendants`
+     ```python
+     def _find_callers_by_file_content(self, symbol_name, exclude_file_paths):
+         call_pattern = f"{symbol_name}("
+         # 1. Find files containing call (excluding definition files)
+         # 2. Scan lines, skip `def ` lines
+         # 3. Get functions in file sorted by line_number
+         # 4. Map call_line → containing function (largest start_line <= call_line)
+         # 5. Slice function source from file content using func_ranges
+     ```
+
+   - **`api/routers/query.py`** — FastAPI route handlers
+     - Fixed `find_callers` endpoint: was wrapping the full dict under `"callers"` key again → now returns `query_service.find_callers(symbol_name)` directly
+     - Fixed `change_impact` endpoint: correctly extracts `callers_list = callers_result.get("callers", [])` and passes `definitions` through
+
+   - **`frontend/app/(protected)/query/page.tsx`** — Complete UI rewrite
+     - Added lucide-react icons (`Search`, `GitBranch`, `Code2`, `BarChart2`, `GitPullRequest`, `X`, `Loader2`) to tabs
+     - Added page subtitle
+     - `SearchTab`: clear button (X), spinner in button while loading
+     - `GenericQueryTab`: `activeQuery: QueryDef | null` state, dynamic placeholder from active query, Enter-to-rerun hint, spinner on active button, `renderResults?: (data) => ReactNode` per QueryDef
+     - **New Analysis renderers**:
+       - `FindCallersView`: shows `DefinitionCard` (with source via `CodeBlock`) + callers list (each with source code); handles `fallback_used` warning badge; `definitions` and `source_code` fields
+       - `MethodUsagesView`: function header → indented caller list
+       - `ChangeImpactView`: impact badge + passes `definitions` to `FindCallersView`
+       - `ClassHierarchyView`: self card with code, ancestors section, descendants section
+       - `HierarchyRow`: collapsible row with expand button showing `CodeBlock` for each ancestor/descendant
+     - **New Metrics renderers**:
+       - `GraphStatsView`: 2×3 grid of colored stat cards
+       - `LanguageStatsView`: table with Language/Files/Functions/Classes columns
+       - `ComplexFunctionsView`: ranked list with color-coded complexity scores
+     - New interfaces: `CallerEntry` (with `source_code`, `source`), `FunctionDefinition` (with `source_code`), `FindCallersData`, `HierarchyNode` (with `source_code`, `docstring`)
+
+4. Errors and Fixes:
+
+   - **`find_method_usages` always empty**: Queried `m:Method` — `Method` nodes don't exist. Fixed to `m:Function`.
+   - **`find_callers` always empty**: Used `[:DEFINES*1..2]` — doesn't exist. Fixed to `OPTIONAL MATCH (f:File)-[:CONTAINS]->(caller)`.
+   - **`callers.map is not a function` TypeError**: Router wrapped the new dict-returning `find_callers()` under `{"callers": result, ...}` creating double nesting. Fixed by returning `query_service.find_callers(symbol_name)` directly.
+   - **15 false-positive callers**: File-based Cypher fallback returned ALL functions from any file containing the pattern (including the definition file itself and all sibling functions). Fixed by: (1) excluding definition files, (2) parsing call lines in Python, (3) mapping call line → containing function by line number.
+   - **`get_class_hierarchy` would break with inheritance**: `collect(DISTINCT nodes(path))` returns list-of-lists; Python code tried `dict(n)` on each sub-list. Fixed by collecting individual node property maps in Cypher instead.
+   - **`ChangeImpactView` missing definition card**: `definitions` from `find_callers()` not passed to `FindCallersView`. Fixed in both router and frontend component.
+   - **`max-h-[600px]` Tailwind warning**: Changed to `max-h-150` (Tailwind 4 canonical form).
+
+5. Problem Solving:
+   - **Root cause of empty callers**: `Function.source_code` is null for many nodes in this deployment; file-based search (`File.source_code`) is more reliable. The text fallback was redesigned around this constraint.
+   - **Accurate call-line attribution**: Without `Function.source_code`, the only way to find which function contains a call is to parse `File.source_code` line-by-line in Python and use function `line_number` ordering to determine containment.
+   - **Cypher path collection bug**: `OPTIONAL MATCH path = (c)-[:INHERITS*]->()` with `collect(nodes(path))` gives nested lists. Solved by using `OPTIONAL MATCH` on individual nodes and collecting property maps.
+
+6. All User Messages:
+   - "curl 'http://localhost:8000/api/v1/query/method-usages?method_name=create_or_update_user' ... why this api failed to find the method? same for callers ..."
+   - "Can we improve the UI for this http://localhost:3000/query"
+   - "curl 'http://localhost:8000/api/v1/query/find_callers?symbol_name=create_or_update_user' ... is empty, and in the UI it should show that method and the caller method and more details"
+   - "{...full JSON response with 15 wrong callers...} verify the result, I think it's wrong"
+   - "is the class hierarchy and the Change Impact works?"
+   - "Class Hierarchy should have code as well."
+   - "what can I search using this 2?" (referring to Analysis tab queries)
+   - Request for conversation summary
+
+7. Pending Tasks:
+   - No explicitly pending tasks from the user beyond the current work. The Class Hierarchy source code feature was the most recent completed task.
+
+8. Current Work:
+   The most recently completed task was adding source code display to the Class Hierarchy view. Changes made:
+   - `db/schema.py`: Added `c.source_code`, `ancestor.source_code`, `ancestor.docstring`, `descendant.source_code`, `descendant.docstring` to `get_class_hierarchy` query
+   - `db/queries.py`: Added `source_code` to returned dict
+   - `frontend/app/(protected)/query/page.tsx`:
+     - `HierarchyNode` interface: added `source_code?: string | null` and `docstring?: string | null`
+     - `ClassHierarchyView`: self card now has `<CodeBlock>` rendered below header info
+     - `HierarchyRow`: converted to a collapsible `<button>` row; when expanded, shows `<CodeBlock>` for the ancestor/descendant class source; disabled/non-clickable when no source_code available; shows ▲/▼ toggle indicator
+
+9. Optional Next Step:
+   No pending explicit requests from the user. The last request — "Class Hierarchy should have code as well" — has been fully implemented. The user's most recent question "what can I search using this 2?" was answered with a text explanation requiring no code changes. No further work was explicitly requested before the summary was asked for.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/skmabudalam/.REDACTED.jsonl
+Please continue the conversation from where we left off without asking the user any further questions. Continue with the last task that you were asked to work on.
+
+---
+
+In the UI for each search it should show the code as well
+
+---
+
+[Request interrupted by user]
+
+---
+
+In the UI of the Analytics of the query , none of it shows the source code in the UI . Improve the UI as well for all the querys
+
+---
+
+In the UI of the Analytics of the query , none of it shows the source code in the UI . Improve the UI as well      
+  for all the querys
+
+---
+
+curl 'http://localhost:8000/api/v1/query/class_hierarchy?class_name=UserProfile' \
+  -H 'Accept: */*' \
+  -H 'Accept-Language: en-US,en;q=0.9' \
+  -H 'Authorization: Bearer REDACTED.REDACTED.REDACTED' \
+  -H 'Connection: keep-alive' \
+  -H 'Content-Type: application/json' \
+  -H 'Origin: http://localhost:3000' \
+  -H 'Referer: http://localhost:3000/' \
+  -H 'Sec-Fetch-Dest: empty' \
+  -H 'Sec-Fetch-Mode: cors' \
+  -H 'Sec-Fetch-Site: same-site' \
+  -H 'User-Agent: Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Mobile Safari/537.36' \
+  -H 'sec-ch-ua: "Chromium";v="145", "Not:A-Brand";v="99"' \
+  -H 'sec-ch-ua-mobile: ?1' \
+  -H 'sec-ch-ua-platform: "Android"'{
+    "class_name": "UserProfile",
+    "file_path": "api/routers/auth.py",
+    "line_number": 26,
+    "docstring": null,
+    "source_code": null,
+    "found": true,
+    "ancestors": [],
+    "descendants": []
+} the source_code is null for some reason
+
+---
+
+Now I want to remove all the unused queries and cypher queries and apis , that is not there and then update the claude.md witht he updated info about this project and guidelines and apis etc .
+
+---
+
+<task-notification>
+<task-id>a2824799f4835eb23</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<status>completed</status>
+<summary>Agent "Clean up unused code in db/schema.py, db/queries.py, api/routers/query.py" completed</summary>
+<result>All edits are complete and all files pass syntax validation. Here is a summary of every change made:
+
+---
+
+## Summary of Changes
+
+### `/Users/skmabudalam/Documents/BugViper/db/schema.py`
+
+Removed 16 dead keys from `CYPHER_QUERIES`:
+
+| Key Removed | Section |
+|---|---|
+| `verify_file_reconstruction` | Verification and Testing (entire section removed) |
+| `get_reconstruction_stats` | Verification and Testing |
+| `test_symbol_resolution` | Verification and Testing |
+| `find_method_context` | Query Operations |
+| `get_file_structure` | Query Operations |
+| `get_repo_files` | Query Operations |
+| `search_symbols` | (between find_callers and analyze_change_impact) |
+| `search_symbols_by_qualified_name` | (same area) |
+| `autocomplete_symbols` | (same area) |
+| `find_symbols_in_scope` | (same area) |
+| `analyze_change_impact_enhanced` | (after analyze_change_impact) |
+| `get_call_graph` | (same area) |
+| `create_import_relationship` | Relationship Operations |
+| `get_repo_config_files` | Config File Operations |
+| `get_repo_dependencies` | Config File Operations |
+| `get_config_file_details` | Config File Operations |
+
+Also fixed a trailing triple-blank-line.
+
+---
+
+### `/Users/skmabudalam/Documents/BugViper/db/queries.py`
+
+Removed 22 dead methods from `CodeQueryService`:
+
+| Method | Reason |
+|---|---|
+| `find_method_context()` | Used broken old-schema Cypher (Method nodes) |
+| `get_file_structure()` | Only called from removed router endpoint |
+| `get_repo_files()` | Not called anywhere (distinct from `get_repository_files`) |
+| `search_symbols()` | Not called from any router or service |
+| `find_symbol_by_qualified_name()` | Only called from removed router endpoint + `get_symbol_source` |
+| `autocomplete_symbols()` | Not called anywhere |
+| `find_symbols_in_scope()` | Not called anywhere |
+| `find_symbol_definition()` | Not called anywhere, uses broken Cypher |
+| `analyze_change_impact_enhanced()` | Not called from any router or service |
+| `get_call_graph()` | Not called anywhere |
+| `get_code_at_line()` | Not called anywhere |
+| `get_code_range()` | Not called anywhere |
+| `verify_reconstruction()` | Not called anywhere |
+| `get_symbol_source()` | Not called anywhere |
+| `reconstruct_repository()` | Not called anywhere |
+| `get_file_metadata()` | Not called anywhere |
+| `get_method_source()` | Only called from removed `get_symbol_source` |
+| `get_class_source()` | Only called from removed `get_symbol_source` |
+| `get_repo_overview_extended()` | Not called anywhere |
+| `get_all_ingested_repositories()` | Not called anywhere |
+| `get_diff_context_condensed()` | Not called anywhere |
+| `delete_repository()` (duplicate) | Second definition (simpler, less correct) was a duplicate |
+
+Also removed empty section headers whose methods were fully removed (`# Code Retrieval Operations` section removed, integrated into `# File Reconstruction`).
+
+---
+
+### `/Users/skmabudalam/Documents/BugViper/api/routers/query.py`
+
+Removed 12 dead route handlers:
+
+| Endpoint | Reason |
+|---|---|
+| `GET /find_usages` | Duplicate alias for `/method-usages` |
+| `GET /class-hierarchy` | Duplicate alias for `/class_hierarchy` |
+| `GET /file-structure` | Not in frontend, underlying method removed |
+| `GET /relationships` | Not in frontend |
+| `GET /symbol/{qualified_name}` | Not in frontend, underlying method removed |
+| `GET /code-finder/related` | Not in frontend |
+| `GET /code-finder/function/arguments` | Not in frontend |
+| `GET /code-finder/function/decorator` | Not in frontend |
+| `GET /code-finder/relationships` | Not in frontend |
+| `GET /repositories/indexed` | Not in frontend |
+| `GET /language/{language}/symbols` | Not in frontend |
+| `GET /symbols-at-lines` | Absolute path version; only relative version is used |</result>
+<usage><total_tokens>125427</total_tokens><tool_uses>70</tool_uses><duration_ms>383131</duration_ms></usage>
+</task-notification>
+Full transcript available at: REDACTED.output
+
+---
+
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Analysis:
+Let me chronologically analyze this conversation to create a comprehensive summary.
+
+## Session Start (Resumed from previous conversation)
+This session continued from a previous conversation that ran out of context. The previous work involved:
+1. Fixing failing APIs (`method-usages`, `find_callers`)
+2. Improving the Query UI
+3. Fixing false-positive callers
+4. Fixing Class Hierarchy and Change Impact
+5. Adding source code display to Class Hierarchy
+
+## Current Session Work
+
+### 1. UI Improvement Request - Analytics Source Code
+User requested that the Analytics tab (Analysis queries) show source code in the UI. The assistant investigated and found:
+- `MethodUsagesView` showed no source code for the searched method or its callers
+- CodeFinder tab queries fell through to raw `ResultsView` JSON renderer
+- `FindCallersView`/`DefinitionCard` needed to handle both `source` and `source_code` property names (different ingestion paths)
+
+Changes made to `frontend/app/(protected)/query/page.tsx`:
+- Added `getNodeSource()` and `shortPath()` helper functions
+- Rewrote `MethodUsagesView` to show source_code for method + callers with `CodeBlock`
+- Added `CodeFinderResultItem` and `CodeFinderResultsView` new components
+- Updated `DefinitionCard` to handle both `source` and `source_code` keys
+- Updated `FindCallersView` callers to use `shortPath` and handle both source keys
+- Wired `CodeFinderResultsView` as `renderResults` for all 7 CodeFinder queries
+
+### 2. Class Hierarchy source_code null fix
+User ran curl for `UserProfile` class and got `source_code: null`. Investigation showed:
+- Different ingestion paths store source under `node.source` vs `node.source_code`
+- The `get_class_hierarchy` Cypher only read `c.source_code`, missing `c.source`
+- File relationship could be `[:CONTAINS]` OR `[:DEFINES]` depending on ingestion path
+- `line_number` vs `line_start` property name inconsistency
+
+Fixes:
+1. `db/schema.py` `get_class_hierarchy` Cypher:
+   - Added `OPTIONAL MATCH (self_file2:File)-[:DEFINES]->(c)` fallback
+   - Used `coalesce(c.source_code, c.source)` for source
+   - Used `coalesce(c.line_number, c.line_start)` for line number
+   - Same pattern for ancestors/descendants
+
+2. `db/schema.py` `find_function_definition` Cypher:
+   - Added `[:DEFINES]` fallback path
+   - Used `coalesce` for source_code/source and line_number/line_start
+
+3. Frontend `ClassHierarchyView`: when `source_code` is null but `file_path` + `line_number` available, shows `PeekViewer` as fallback
+
+4. Frontend `HierarchyRow`: now has `canExpand` = hasCode OR hasPeek, shows `PeekViewer` for ancestors/descendants when no stored source
+
+### 3. Codebase Cleanup
+User requested removal of all unused queries, Cypher queries, and APIs, then update CLAUDE.md.
+
+Exploration agent audited the codebase:
+- Identified 16 unused CYPHER_QUERIES keys
+- Identified 22 unused `CodeQueryService` methods
+- Identified 12 unused router endpoints
+- Key finding: `db/ingestion.py` uses all `create_*` and `batch_*` queries
+- Key finding: `get_diff_context_enhanced()` IS used by `api/services/review_service.py`
+
+Cleanup agent made changes to:
+- `db/schema.py`: Removed 16 unused CYPHER_QUERIES keys (verify_file_reconstruction, get_reconstruction_stats, test_symbol_resolution, find_method_context, get_file_structure, get_repo_files, search_symbols, search_symbols_by_qualified_name, autocomplete_symbols, find_symbols_in_scope, analyze_change_impact_enhanced, get_call_graph, create_import_relationship, get_repo_config_files, get_repo_dependencies, get_config_file_details)
+- `db/queries.py`: Removed 22 unused methods
+- `api/routers/query.py`: Removed 12 unused endpoints
+
+### 4. CLAUDE.md Update (pending)
+The user asked to update CLAUDE.md after the cleanup. The assistant read both the current CLAUDE.md and `frontend/lib/api.ts` to gather accurate information, but hadn't written the updated CLAUDE.md yet when the summary was requested.
+
+Key things to update in CLAUDE.md:
+- Remove mention of `search-symbols` endpoint (doesn't exist)
+- Update Key Endpoints table to reflect actual endpoints
+- Update graph schema notes (source_code vs source, line_number vs line_start)
+- Add notes about coalesce patterns needed for multi-ingestion-path compatibility
+- Update CodeFinder APIs table
+- Remove references to removed endpoints
+
+The `frontend/lib/api.ts` shows:
+- Some functions in api.ts call endpoints that were removed (e.g., `getLanguageSymbols` calls `/api/v1/query/language/symbols` which was removed)
+- `getComplexity` calls `/code-finder/complexity` which was KEPT
+
+The current CLAUDE.md is outdated and needs significant revision.
+
+Summary:
+1. Primary Request and Intent:
+   - **UI source code display**: Show source code in the Analytics tab (Analysis queries) and all CodeFinder queries in the query page UI. Previously none of the Analysis queries showed source code inline.
+   - **Fix `source_code: null`**: Class Hierarchy API returned `source_code: null` for `UserProfile` because different ingestion paths store source under `node.source` vs `node.source_code`, and the Cypher query only read one property name.
+   - **Codebase cleanup**: Remove all unused Cypher queries from `db/schema.py`, unused methods from `db/queries.py`, and unused API endpoints from `api/routers/query.py`.
+   - **Update CLAUDE.md**: After cleanup, update the project documentation with accurate endpoint lists, schema notes, and guidelines.
+
+2. Key Technical Concepts:
+   - **Neo4j graph schema**: `Function`, `Class`, `File`, `Variable`, `Module`, `Repository` nodes. Relationships: `[:CONTAINS]` (new ingestion) and `[:DEFINES]` (old ingestion) both exist for File→Class/Function. `node.source_code` (new) vs `node.source` (old) — must `coalesce()` both.
+   - **Dual ingestion property names**: `line_number` vs `line_start`, `source_code` vs `source` — different ingestion paths populate different properties; Cypher must use `coalesce(c.source_code, c.source)` and `coalesce(c.line_number, c.line_start)`
+   - **Two-tier fulltext search**: `code_search` index (Function/Class/Variable) → `file_content_search` (File) fallback
+   - **PeekViewer as fallback**: When no stored `source_code`/`source` on a node but `file_path` + `line_number` are known, the frontend uses the Peek API (`/code-finder/peek`) to lazily load context
+   - **CodeFinder vs db/queries.py**: `CodeFinder` class in `api/services/code_search.py` stores results under `node.source`; `CYPHER_QUERIES` in `db/schema.py` uses `node.source_code`. The `getNodeSource()` frontend helper handles both.
+   - **`db/ingestion.py` uses all `create_*` and `batch_*` CYPHER_QUERIES** — these must never be removed even though `db/queries.py` doesn't reference them
+   - **`get_diff_context_enhanced()`** is called from `api/services/review_service.py` — must be kept despite not being in query router
+
+3. Files and Code Sections:
+
+   - **`frontend/app/(protected)/query/page.tsx`**
+     - Major additions: `getNodeSource()`, `shortPath()` helpers; rewrote `MethodUsagesView`; added `CodeFinderItem`, `CodeFinderResultsView`; updated `DefinitionCard`, `FindCallersView`, `ClassHierarchyView`, `HierarchyRow`
+     - Key helpers:
+       ```ts
+       function getNodeSource(item: Record<string, unknown>): string | null {
+         return (item.source_code as string) || (item.source as string) || null;
+       }
+       function shortPath(p: string | null | undefined): { dir: string | null; file: string } {
+         if (!p) return { dir: null, file: "—" };
+         const parts = p.split("/");
+         const file = parts[parts.length - 1];
+         const dir = parts.length > 1 ? parts.slice(0, -1).join("/") : null;
+         return { dir, file };
+       }
+       ```
+     - `MethodUsagesView` now shows the searched function's source code card at top, then each caller with its own `CodeBlock` or `PeekViewer` fallback
+     - `CodeFinderResultsView` / `CodeFinderItem`: handles Function/Class (toggle ▼ code), import entries (structured display), line-search entries (match_line + PeekViewer), module entries (name + lang)
+     - All 7 CodeFinder queries now use `renderResults: (d) => <CodeFinderResultsView data={d} />`
+     - `ClassHierarchyView` self card: `source_code` → CodeBlock, else `file_path+line_number` → PeekViewer
+     - `HierarchyRow`: `canExpand = hasCode || hasPeek`; expands with CodeBlock or PeekViewer
+
+   - **`db/schema.py`**
+     - Fixed `get_class_hierarchy` to use `coalesce` for both ingestion paths:
+       ```cypher
+       OPTIONAL MATCH (self_file:File)-[:CONTAINS]->(c)
+       OPTIONAL MATCH (self_file2:File)-[:DEFINES]->(c)
+       ...
+       coalesce(c.source_code, c.source) as source_code,
+       coalesce(c.line_number, c.line_start) as line_number,
+       coalesce(self_file.path, self_file2.path) as file_path,
+       ```
+     - Fixed `find_function_definition` similarly with `[:DEFINES]` fallback and `coalesce` for all properties
+     - **Removed 16 unused CYPHER_QUERIES keys** (cleanup agent): `verify_file_reconstruction`, `get_reconstruction_stats`, `test_symbol_resolution`, `find_method_context`, `get_file_structure`, `get_repo_files`, `search_symbols`, `search_symbols_by_qualified_name`, `autocomplete_symbols`, `find_symbols_in_scope`, `analyze_change_impact_enhanced`, `get_call_graph`, `create_import_relationship`, `get_repo_config_files`, `get_repo_dependencies`, `get_config_file_details`
+
+   - **`db/queries.py`**
+     - **Removed 22 unused methods** (cleanup agent): `find_method_context()`, `get_file_structure()`, `get_repo_files()`, `search_symbols()`, `find_symbol_by_qualified_name()`, `autocomplete_symbols()`, `find_symbols_in_scope()`, `find_symbol_definition()`, `analyze_change_impact_enhanced()`, `get_call_graph()`, `get_code_at_line()`, `get_code_range()`, `verify_reconstruction()`, `get_symbol_source()`, `reconstruct_repository()`, `get_file_metadata()`, `get_method_source()`, `get_class_source()`, `get_repo_overview_extended()`, `get_all_ingested_repositories()`, `get_diff_context_condensed()`, duplicate `delete_repository()`
+
+   - **`api/routers/query.py`**
+     - **Removed 12 unused endpoints** (cleanup agent): `GET /find_usages`, `GET /class-hierarchy`, `GET /file-structure`, `GET /relationships`, `GET /symbol/{qualified_name}`, `GET /code-finder/related`, `GET /code-finder/function/arguments`, `GET /code-finder/function/decorator`, `GET /code-finder/relationships`, `GET /repositories/indexed`, `GET /language/{language}/symbols`, `GET /symbols-at-lines`
+
+   - **`frontend/lib/api.ts`** — Read to verify what endpoints are actually called from frontend:
+     - Active Query endpoints: `searchCode`, `getMethodUsages`, `findCallers`, `getClassHierarchy`, `getChangeImpact`, `findFunction`, `findClass`, `findVariable`, `findContent`, `findModule`, `findImports`, `findByLine`, `peekFileLines`, `getGraphStats`, `getLanguageStats`, `getTopComplexFunctions`, `getSymbolsAtLines`, `getDiffContext`, `getFileSource`, `getComplexity`
+     - Note: `getLanguageSymbols` in api.ts calls `/api/v1/query/language/symbols` which was removed in cleanup
+
+   - **`CLAUDE.md`** — Read but NOT yet updated (update is pending)
+
+4. Errors and fixes:
+   - **`source_code: null` for UserProfile class**: Root cause was dual ingestion paths — new ingestion stores `node.source_code`, old stores `node.source`; also `[:CONTAINS]` vs `[:DEFINES]` file relationships and `line_number` vs `line_start`. Fixed by using `coalesce()` in Cypher and adding `OPTIONAL MATCH` for both relationship types. Frontend fallback added with `PeekViewer`.
+   - **CodeFinder results showed raw JSON**: Fixed by adding `CodeFinderResultsView` component and wiring it as `renderResults` for all CodeFinder queries.
+   - **MethodUsagesView showed no source code**: Fixed by rewriting the component to show the method's own `source_code` in a header card and each caller's `source_code` in individual cards.
+   - **`getLanguageSymbols` in api.ts calls removed endpoint**: This is a known issue — `GET /language/{language}/symbols` was removed but `getLanguageSymbols()` still exists in api.ts (it's in the default export but not used by any UI component).
+
+5. Problem Solving:
+   - **Multi-ingestion-path compatibility**: Established pattern of using `coalesce(node.source_code, node.source)` in all Cypher queries and `getNodeSource()` in the frontend to handle both ingestion paths transparently
+   - **PeekViewer as universal fallback**: When source code is not stored on a node but path + line_number are known, PeekViewer loads context lazily from the file's stored source_code — covers all cases where symbol-level source_code is null
+   - **Codebase audit methodology**: Used grep for `CYPHER_QUERIES["..."]` patterns across ALL Python files (not just queries.py) to distinguish truly unused keys from keys used only by ingestion
+
+6. All user messages:
+   - "In the UI of the Analytics of the query, none of it shows the source code in the UI. Improve the UI as well for all the querys" [interrupted then repeated]
+   - "In the UI of the Analytics of the query, none of it shows the source code in the UI. Improve the UI as well for all the querys" [final version]
+   - `curl 'http://localhost:8000/api/v1/query/class_hierarchy?class_name=UserProfile'` — showing `"source_code": null` — "the source_code is null for some reason"
+   - "Now I want to remove all the unused queries and cypher queries and apis, that is not there and then update the claude.md with the updated info about this project and guidelines and apis etc."
+   - [Summary request]
+
+7. Pending Tasks:
+   - **Update CLAUDE.md** with accurate current project information: correct endpoint list, updated graph schema notes (coalesce patterns), accurate CodeFinder APIs, removal of non-existent endpoints like `search-symbols`, updated architecture notes
+
+8. Current Work:
+   The cleanup agent successfully completed removing unused code from `db/schema.py`, `db/queries.py`, and `api/routers/query.py`. The assistant then read both `CLAUDE.md` and `frontend/lib/api.ts` to prepare for writing the CLAUDE.md update, but the summary was requested before that update was written.
+
+   The user's explicit request was: *"Now I want to remove all the unused queries and cypher queries and apis, that is not there and then update the claude.md with the updated info about this project and guidelines and apis etc."*
+
+   The cleanup portion is complete. The CLAUDE.md update is still pending.
+
+9. Optional Next Step:
+   Write the updated `CLAUDE.md` with accurate current state of the project. The user explicitly requested: *"update the claude.md with the updated info about this project and guidelines and apis etc."*
+
+   Key changes needed in CLAUDE.md:
+   - Remove `GET /api/v1/query/search-symbols` (doesn't exist)
+   - Update Key Endpoints table to only list active endpoints
+   - Add graph schema note about dual property names (`source_code`/`source`, `line_number`/`line_start`, `[:CONTAINS]`/`[:DEFINES]`)
+   - Update CodeFinder APIs table (remove `/complexity` single-function is actually kept; all 10 endpoints still active)
+   - Add note about `db/ingestion.py` using all `create_*`/`batch_*` CYPHER_QUERIES
+   - Update CodeQueryService method list to reflect the cleaned-up state
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/skmabudalam/.REDACTED.jsonl
+Please continue the conversation from where we left off without asking the user any further questions. Continue with the last task that you were asked to work on.
