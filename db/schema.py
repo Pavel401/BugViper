@@ -310,7 +310,6 @@ class CodeGraphSchema:
         })
 
 
-
 # =============================================================================
 # Cypher Queries
 # =============================================================================
@@ -619,15 +618,6 @@ CYPHER_QUERIES = {
         MERGE (child)-[:INHERITS]->(parent)
     """,
     
-    "create_import_relationship": """
-        MATCH (from_file:File {id: $from_file_id})
-        MATCH (to:File {path: $imported_path})
-        WHERE to.repo_id = $repo_id OR to.path CONTAINS $imported_path
-        MERGE (from_file)-[r:IMPORTS {line: $line_number}]->(to)
-        ON CREATE SET r.alias = $alias, r.imported_names = $imported_names
-        RETURN r
-    """,
-    
     # -------------------------------------------------------------------------
     # Query Operations
     # -------------------------------------------------------------------------
@@ -639,17 +629,6 @@ CYPHER_QUERIES = {
         RETURN m, f.path as file_path,
                collect(DISTINCT {caller: caller, line: call.line_number, file: caller_file.path}) as callers,
                [] as references
-    """,
-    
-    "find_method_context": """
-        MATCH (m:Method {id: $method_id})
-        MATCH (c:Class)-[:HAS_METHOD]->(m)
-        MATCH (f:File)-[:DEFINES]->(c)
-        MATCH (r:Repository)-[:CONTAINS*]->(f)
-        MATCH (u:User)-[:OWNS]->(r)
-        RETURN u.username as user, r.name as repo, f.path as file, 
-               c.name as class_name, m.name as method, 
-               m.line_start as start_line, m.line_end as end_line
     """,
     
     "find_function_definition": """
@@ -715,41 +694,6 @@ CYPHER_QUERIES = {
                }) as descendants
     """,
     
-    "get_file_structure": """
-        MATCH (f:File {id: $file_id})
-        
-        // Aggregate methods per class
-        OPTIONAL MATCH (f)-[:DEFINES]->(c:Class)
-        OPTIONAL MATCH (c)-[:HAS_METHOD]->(m:Method)
-        WITH f, c, collect(m) as class_methods
-        
-        // Aggregate classes for the file
-        WITH f, collect(CASE WHEN c IS NOT NULL THEN {
-            name: c.name,
-            line_start: c.line_start,
-            line_end: c.line_end,
-            methods: [m in class_methods WHERE m IS NOT NULL | {
-                name: m.name,
-                line_start: m.line_start,
-                line_end: m.line_end,
-                visibility: m.visibility
-            }]
-        } ELSE NULL END) as classes_raw
-        
-        // Filter out nulls
-        WITH f, [x IN classes_raw WHERE x IS NOT NULL] as classes
-        
-        // Collect Functions
-        OPTIONAL MATCH (f)-[:DEFINES]->(fn:Function)
-        WITH f, classes, collect(fn) as functions
-        
-        // Collect Imports
-        OPTIONAL MATCH (f)-[:HAS_IMPORT]->(i:Import)
-        WITH f, classes, functions, collect(i) as imports
-        
-        RETURN f, classes, functions, imports
-    """,
-    
     "get_repo_overview": """
         MATCH (r:Repository {id: $repo_id})
         OPTIONAL MATCH (r)-[:CONTAINS*]->(f:File)
@@ -760,12 +704,6 @@ CYPHER_QUERIES = {
                count(DISTINCT c) as class_count,
                count(DISTINCT fn) as function_count,
                collect(DISTINCT f.language) as languages
-    """,
-
-    "get_repo_files": """
-        MATCH (r:Repository {id: $repo_id})-[:CONTAINS*]->(f:File)
-        RETURN f, f.language as language, f.lines_count as lines_count
-        ORDER BY f.path
     """,
 
     "get_module_tree": """
@@ -819,40 +757,6 @@ CYPHER_QUERIES = {
         ORDER BY type DESC, name
     """,
 
-    # -------------------------------------------------------------------------
-    # Verification and Testing Queries
-    # -------------------------------------------------------------------------
-    "verify_file_reconstruction": """
-        MATCH (f:File {id: $file_id})
-        RETURN f.path as path,
-               f.source_code IS NOT NULL as has_source,
-               size(f.source_code) as source_size,
-               f.lines_count as lines_count
-    """,
-
-    "get_reconstruction_stats": """
-        MATCH (r:Repository {id: $repo_id})-[:CONTAINS*]->(f:File)
-        WITH count(f) as total,
-             sum(CASE WHEN f.source_code IS NOT NULL THEN 1 ELSE 0 END) as with_source,
-             sum(f.lines_count) as total_lines
-        RETURN total as total_files,
-               with_source as files_with_source,
-               total - with_source as files_missing_source,
-               total_lines as total_lines,
-               (with_source * 100.0 / total) as success_rate
-    """,
-
-    "test_symbol_resolution": """
-        MATCH (s:Symbol)
-        WHERE s.file_id STARTS WITH $repo_id
-        WITH count(s) as total_symbols,
-             sum(CASE WHEN s.source_code IS NOT NULL THEN 1 ELSE 0 END) as symbols_with_source
-        RETURN total_symbols,
-               symbols_with_source,
-               (symbols_with_source * 100.0 / total_symbols) as symbol_source_rate
-    """,
-
-    
     "search_code": """
         CALL db.index.fulltext.queryNodes('code_search', $search_term)
         YIELD node, score
@@ -869,62 +773,6 @@ CYPHER_QUERIES = {
         LIMIT 20
     """,
 
-    "search_symbols": """
-        CALL db.index.fulltext.queryNodes('code_search', $search_term)
-        YIELD node, score
-        WHERE node:Function OR node:Class OR node:Variable
-        OPTIONAL MATCH (f:File)-[:CONTAINS]->(node)
-        RETURN
-            node.name as name,
-            CASE WHEN node:Function THEN 'function'
-                 WHEN node:Class THEN 'class'
-                 ELSE 'variable' END as type,
-            coalesce(f.path, node.path) as path,
-            coalesce(node.line_number, 0) as line_number,
-            score
-        ORDER BY score DESC
-        LIMIT $limit
-    """,
-
-    "search_symbols_by_qualified_name": """
-        MATCH (s:Symbol)
-        WHERE s.qualified_name = $qualified_name
-          AND s.file_id STARTS WITH $repo_id
-        RETURN s.id as id,
-               s.name as name,
-               s.qualified_name as qualified_name,
-               s.type as type,
-               s.file_id as file_id,
-               s.line_start as line_start,
-               s.line_end as line_end,
-               s.scope as scope,
-               s.visibility as visibility,
-               s.docstring as docstring
-        LIMIT 1
-    """,
-
-    "autocomplete_symbols": """
-        MATCH (s:Symbol)
-        WHERE s.qualified_name STARTS WITH $prefix
-          AND s.file_id STARTS WITH $repo_id
-        RETURN s.qualified_name as qualified_name,
-               s.type as type,
-               s.visibility as visibility,
-               s.file_id as file_id
-        ORDER BY s.qualified_name
-        LIMIT $limit
-    """,
-
-    "find_symbols_in_scope": """
-        MATCH (s:Symbol {file_id: $file_id, scope: $scope})
-        RETURN s.name as name,
-               s.qualified_name as qualified_name,
-               s.type as type,
-               s.line_start as line_start,
-               s.visibility as visibility
-        ORDER BY s.line_start
-    """,
-    
     "analyze_change_impact": """
         MATCH (target {id: $target_id})
         MATCH path = (caller)-[:CALLS*1..3]->(target)
@@ -935,83 +783,6 @@ CYPHER_QUERIES = {
         ORDER BY distance, f.path
     """,
 
-    "analyze_change_impact_enhanced": """
-        MATCH (s:Symbol {qualified_name: $qualified_name})
-        WHERE s.file_id STARTS WITH $repo_id
-
-        // Direct callers
-        OPTIONAL MATCH (direct_caller)-[:CALLS]->(s)
-        OPTIONAL MATCH (direct_file:File)-[:DEFINES*1..2]->(direct_caller)
-
-        // Transitive callers (up to 3 levels)
-        OPTIONAL MATCH path = (transitive_caller)-[:CALLS*2..3]->(s)
-        OPTIONAL MATCH (trans_file:File)-[:DEFINES*1..2]->(transitive_caller)
-
-        // Inheritance impact (for classes/methods)
-        OPTIONAL MATCH (child:Class)-[:INHERITS*]->(parent:Class {name: s.name})
-        OPTIONAL MATCH (inherit_file:File)-[:DEFINES]->(child)
-
-        // Import impact
-        OPTIONAL MATCH (s_file:File {id: s.file_id})<-[:IMPORTS]-(importer:File)
-
-        WITH s,
-             collect(DISTINCT {
-                 name: direct_caller.name,
-                 type: labels(direct_caller)[0],
-                 file: direct_file.path,
-                 line: direct_caller.line_start,
-                 impact_type: 'direct_call',
-                 distance: 1
-             }) as direct_calls,
-             collect(DISTINCT {
-                 name: transitive_caller.name,
-                 type: labels(transitive_caller)[0],
-                 file: trans_file.path,
-                 line: transitive_caller.line_start,
-                 impact_type: 'transitive_call',
-                 distance: length(path)
-             }) as transitive_calls,
-             collect(DISTINCT {
-                 name: child.name,
-                 type: 'Class',
-                 file: inherit_file.path,
-                 line: child.line_start,
-                 impact_type: 'inheritance',
-                 distance: 1
-             }) as inheritance_impact,
-             collect(DISTINCT {
-                 name: importer.name,
-                 type: 'File',
-                 file: importer.path,
-                 line: 1,
-                 impact_type: 'import',
-                 distance: 1
-             }) as import_impact
-
-        RETURN s.qualified_name as target,
-               direct_calls,
-               transitive_calls,
-               inheritance_impact,
-               import_impact,
-               size(direct_calls) + size(transitive_calls) +
-               size(inheritance_impact) + size(import_impact) as total_impact
-    """,
-
-    "get_call_graph": """
-        MATCH (s:Symbol {qualified_name: $qualified_name})
-        WHERE s.file_id STARTS WITH $repo_id
-        MATCH path = (s)-[:CALLS*0..$max_depth]->(:Symbol)
-        WITH nodes(path) as call_chain, relationships(path) as calls
-        UNWIND range(0, size(call_chain)-2) as idx
-        RETURN call_chain[idx].qualified_name as caller,
-               call_chain[idx+1].qualified_name as callee,
-               call_chain[idx].type as caller_type,
-               call_chain[idx+1].type as callee_type,
-               calls[idx].line_number as line,
-               idx as depth
-        ORDER BY depth, caller
-    """,
-    
     # -------------------------------------------------------------------------
     # Config File Operations
     # -------------------------------------------------------------------------
@@ -1074,29 +845,6 @@ CYPHER_QUERIES = {
         RETURN s.id as script_id
     """,
     
-    "get_repo_config_files": """
-        MATCH (r:Repository {id: $repo_id})-[:HAS_CONFIG]->(cf:ConfigFile)
-        RETURN cf.id as id, cf.path as path, cf.file_type as file_type,
-               cf.project_name as project_name, cf.version as version
-        ORDER BY cf.path
-    """,
-    
-    "get_repo_dependencies": """
-        MATCH (r:Repository {id: $repo_id})-[:HAS_CONFIG]->(cf:ConfigFile)-[:HAS_DEPENDENCY]->(d:Dependency)
-        RETURN d.name as name, d.version_spec as version, d.is_dev as is_dev,
-               d.source as source, cf.path as config_file
-        ORDER BY d.is_dev, d.name
-    """,
-    
-    "get_config_file_details": """
-        MATCH (cf:ConfigFile {id: $config_id})
-        OPTIONAL MATCH (cf)-[:HAS_DEPENDENCY]->(d:Dependency)
-        OPTIONAL MATCH (cf)-[:HAS_SCRIPT]->(s:Script)
-        RETURN cf,
-               collect(DISTINCT d) as dependencies,
-               collect(DISTINCT s) as scripts
-    """,
-
     # -------------------------------------------------------------------------
     # Batch Operations (Performance Optimization)
     # -------------------------------------------------------------------------

@@ -72,21 +72,6 @@ async def find_method_usages(
         raise HTTPException(status_code=500, detail=f"Failed to find method usages: {str(e)}")
 
 
-@router.get("/find_usages")
-async def find_usages(
-    symbol_name: str = Query(..., description="Symbol name to find usages for"),
-    query_service: CodeQueryService = Depends(get_query_service)
-) -> Dict[str, Any]:
-    """
-    Find all usages of a specific symbol (alias for method-usages).
-    """
-    try:
-        usages = query_service.find_method_usages(symbol_name)
-        return usages
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to find usages: {str(e)}")
-
-
 @router.get("/find_callers")
 async def find_callers(
     symbol_name: str = Query(..., description="Symbol name to find callers for"),
@@ -116,36 +101,6 @@ async def get_class_hierarchy(
         raise HTTPException(status_code=500, detail=f"Failed to get class hierarchy: {str(e)}")
 
 
-@router.get("/class-hierarchy")
-async def get_class_hierarchy_alt(
-    class_name: str = Query(..., description="Name of the class to analyze"),
-    query_service: CodeQueryService = Depends(get_query_service)
-) -> Dict[str, Any]:
-    """
-    Get class hierarchy (inheritance tree) - alternative endpoint.
-    """
-    try:
-        hierarchy = query_service.get_class_hierarchy(class_name)
-        return hierarchy
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get class hierarchy: {str(e)}")
-
-
-@router.get("/file-structure")
-async def analyze_file_structure(
-    file_id: str = Query(..., description="File ID to analyze"),
-    query_service: CodeQueryService = Depends(get_query_service)
-) -> Dict[str, Any]:
-    """
-    Analyze the structure of a specific file.
-    """
-    try:
-        structure = query_service.get_file_structure(file_id)
-        return structure
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to analyze file structure: {str(e)}")
-
-
 @router.get("/change_impact")
 async def analyze_change_impact(
     symbol_name: str = Query(..., description="Symbol to analyze impact for"),
@@ -169,32 +124,6 @@ async def analyze_change_impact(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to analyze change impact: {str(e)}")
-
-
-@router.get("/relationships")
-async def get_code_relationships(
-    symbol_name: str = Query(..., description="Symbol to find relationships for"),
-    query_service: CodeQueryService = Depends(get_query_service)
-) -> Dict[str, Any]:
-    """
-    Get code relationship analysis for a symbol.
-    """
-    try:
-        # Get comprehensive relationship data
-        usages = query_service.find_method_usages(symbol_name)
-        callers = query_service.find_callers(symbol_name)
-        
-        return {
-            "symbol": symbol_name,
-            "relationships": {
-                "usages": usages,
-                "callers": callers,
-                "usage_count": len(usages.get('usages', [])),
-                "caller_count": len(callers)
-            }
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get code relationships: {str(e)}")
 
 
 @router.get("/metrics")
@@ -235,26 +164,6 @@ async def get_graph_stats(
         return stats
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get graph stats: {str(e)}")
-
-
-@router.get("/symbol/{qualified_name}")
-async def get_symbol_by_qualified_name(
-    qualified_name: str,
-    repo_id: str = Query(..., description="Repository ID"),
-    query_service: CodeQueryService = Depends(get_query_service)
-) -> Dict[str, Any]:
-    """
-    Get symbol information by its qualified name.
-    """
-    try:
-        symbol = query_service.find_symbol_by_qualified_name(qualified_name, repo_id)
-        if not symbol:
-            raise HTTPException(status_code=404, detail="Symbol not found")
-        return symbol
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to find symbol: {str(e)}")
 
 
 # =========================================================================
@@ -379,70 +288,6 @@ async def find_imports(
         raise HTTPException(status_code=500, detail=f"Import search failed: {str(e)}")
 
 
-@router.get("/code-finder/related")
-async def find_related_code(
-    query: str = Query(..., description="Search query for related code"),
-    fuzzy: bool = Query(False, description="Enable fuzzy search"),
-    edit_distance: int = Query(2, description="Edit distance for fuzzy search"),
-    code_finder: CodeFinder = Depends(get_code_finder)
-) -> Dict[str, Any]:
-    """
-    Find code related to a query using multiple search strategies.
-    """
-    try:
-        results = code_finder.find_related_code(query, fuzzy, edit_distance)
-        return {
-            "search_query": query,
-            "fuzzy_search": fuzzy,
-            "edit_distance": edit_distance,
-            **results
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Related code search failed: {str(e)}")
-
-
-@router.get("/code-finder/function/arguments")
-async def find_functions_by_argument(
-    argument_name: str = Query(..., description="Argument name to search for"),
-    path: str = Query(None, description="Optional file path to filter by"),
-    code_finder: CodeFinder = Depends(get_code_finder)
-) -> Dict[str, Any]:
-    """
-    Find functions that take a specific argument.
-    """
-    try:
-        results = code_finder.find_functions_by_argument(argument_name, path)
-        return {
-            "argument_name": argument_name,
-            "path_filter": path,
-            "results": results,
-            "total": len(results)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Function argument search failed: {str(e)}")
-
-
-@router.get("/code-finder/function/decorator")
-async def find_functions_by_decorator(
-    decorator_name: str = Query(..., description="Decorator name to search for"),
-    path: str = Query(None, description="Optional file path to filter by"),
-    code_finder: CodeFinder = Depends(get_code_finder)
-) -> Dict[str, Any]:
-    """
-    Find functions that have a specific decorator.
-    """
-    try:
-        results = code_finder.find_functions_by_decorator(decorator_name, path)
-        return {
-            "decorator_name": decorator_name,
-            "path_filter": path,
-            "results": results,
-            "total": len(results)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Function decorator search failed: {str(e)}")
-
-
 @router.get("/code-finder/complexity")
 async def get_cyclomatic_complexity(
     function_name: str = Query(..., description="Function name to analyze"),
@@ -540,140 +385,6 @@ async def peek_file_lines(
         raise HTTPException(status_code=500, detail=f"Peek failed: {str(e)}")
 
 
-@router.get("/code-finder/relationships")
-async def analyze_code_relationships(
-    query_type: str = Query(..., description="Type of relationship query"),
-    target: str = Query(..., description="Target symbol for analysis"),
-    context: str = Query(None, description="Additional context for the query"),
-    code_finder: CodeFinder = Depends(get_code_finder)
-) -> Dict[str, Any]:
-    """
-    Analyze code relationships using the CodeFinder's relationship query system.
-    
-    Supported query types:
-    - find_callers: Find all functions that call the target function
-    - find_callees: Find all functions called by the target function
-    - find_importers: Find all files that import the target module
-    - who_modifies: Find what functions modify a target variable
-    - class_hierarchy: Find inheritance relationships for a class
-    - call_chain: Find call paths between functions (format: 'start->end')
-    - module_deps: Find module dependencies
-    - variable_scope: Find variable usage across scopes
-    """
-    try:
-        results = code_finder.execute_relationship_query(query_type, target, context)
-        return results
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Relationship analysis failed: {str(e)}")
-
-
-@router.get("/repositories/indexed")
-async def list_indexed_repositories(
-    code_finder: CodeFinder = Depends(get_code_finder)
-) -> Dict[str, Any]:
-    """
-    List all indexed repositories using the CodeFinder tool.
-    """
-    try:
-        results = code_finder.list_indexed_repositories()
-        return {
-            "repositories": results,
-            "total": len(results)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list repositories: {str(e)}")
-
-
-
-@router.get("/language/{language}/symbols")
-async def get_language_symbols(
-    language: str,
-    symbol_type: str = Query(..., description="Symbol type: function, class, variable, etc."),
-    limit: int = Query(50, description="Maximum number of results"),
-    query_service: CodeQueryService = Depends(get_query_service)
-) -> Dict[str, Any]:
-    """
-    Get all symbols of a specific type for a given language.
-    
-    Supported symbol types:
-    - function: All functions
-    - class: All classes  
-    - variable: All variables
-    - module: All modules
-    - file: All files
-    """
-    try:
-        # Use Neo4j to query symbols by type and language
-        if symbol_type.lower() == "function":
-            query = f"""
-                MATCH (n:Function)
-                OPTIONAL MATCH (f:File)-[:CONTAINS]->(n)
-                WHERE f.language = $language OR f.extension IN ['.{language.lower()}', '.{language[:2].lower()}']
-                RETURN n.name as name, n.path as path, n.line_number as line_number,
-                       n.docstring as docstring, n.is_dependency as is_dependency,
-                       f.language as file_language
-                ORDER BY n.is_dependency ASC, n.name
-                LIMIT $limit
-            """
-        elif symbol_type.lower() == "class":
-            query = f"""
-                MATCH (n:Class)
-                OPTIONAL MATCH (f:File)-[:CONTAINS]->(n)
-                WHERE f.language = $language OR f.extension IN ['.{language.lower()}', '.{language[:2].lower()}']
-                RETURN n.name as name, n.path as path, n.line_number as line_number,
-                       n.docstring as docstring, n.is_dependency as is_dependency,
-                       f.language as file_language
-                ORDER BY n.is_dependency ASC, n.name
-                LIMIT $limit
-            """
-        elif symbol_type.lower() == "variable":
-            query = f"""
-                MATCH (n:Variable)
-                OPTIONAL MATCH (f:File)-[:CONTAINS*]->(n)
-                WHERE f.language = $language OR f.extension IN ['.{language.lower()}', '.{language[:2].lower()}']
-                RETURN n.name as name, n.path as path, n.line_number as line_number,
-                       n.value as value, n.context as context, n.is_dependency as is_dependency,
-                       f.language as file_language
-                ORDER BY n.is_dependency ASC, n.name
-                LIMIT $limit
-            """
-        elif symbol_type.lower() == "file":
-            query = f"""
-                MATCH (n:File)
-                WHERE n.language = $language OR n.extension IN ['.{language.lower()}', '.{language[:2].lower()}']
-                RETURN n.name as name, n.path as path, n.relative_path as relative_path,
-                       n.language as language, n.extension as extension,
-                       n.is_dependency as is_dependency
-                ORDER BY n.is_dependency ASC, n.path
-                LIMIT $limit
-            """
-        elif symbol_type.lower() == "module":
-            query = f"""
-                MATCH (n:Module)
-                WHERE n.lang = $language
-                RETURN n.name as name, n.lang as language,
-                       n.full_import_name as full_import_name
-                ORDER BY n.name
-                LIMIT $limit
-            """
-        else:
-            raise HTTPException(status_code=400, detail=f"Unsupported symbol type: {symbol_type}")
-        
-        records, _, _ = query_service.db.run_query(query, {"language": language, "limit": limit})
-        
-        return {
-            "language": language,
-            "symbol_type": symbol_type,
-            "results": [dict(record) for record in records],
-            "total": len(records),
-            "limit": limit
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Language symbol query failed: {str(e)}")
-
-
 @router.get("/language/stats")
 async def get_language_statistics(
     language: str = Query(None, description="Optional language filter"),
@@ -727,30 +438,6 @@ async def get_language_statistics(
 
 
 # --- Code Review / Diff Context Endpoints ---
-
-
-@router.get("/symbols-at-lines")
-async def get_symbols_at_lines(
-    file_path: str = Query(..., description="Absolute file path"),
-    start_line: int = Query(..., description="Start line number"),
-    end_line: int = Query(..., description="End line number"),
-    query_service: CodeQueryService = Depends(get_query_service)
-) -> Dict[str, Any]:
-    """
-    Find all symbols (functions, classes, variables) overlapping a line range.
-    Useful for mapping diff hunks to affected code.
-    """
-    try:
-        results = query_service.get_symbols_at_lines(file_path, start_line, end_line)
-        return {
-            "file_path": file_path,
-            "start_line": start_line,
-            "end_line": end_line,
-            "symbols": results,
-            "total": len(results),
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Symbol lookup failed: {str(e)}")
 
 
 @router.get("/symbols-at-lines-relative")
