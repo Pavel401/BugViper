@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "31b56379fc6c",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 10,
+  "files_touched": [
+    "api/routers/query.py",
+    "db/queries.py",
+    "db/schema.py",
+    "frontend/app/(protected)/query/page.tsx"
+  ],
+  "sessions": [
+    {
+      "metadata": "/31/b56379fc6c/0/metadata.json",
+      "transcript": "/31/b56379fc6c/0/full.jsonl",
+      "context": "/31/b56379fc6c/0/context.md",
+      "content_hash": "/31/b56379fc6c/0/content_hash.txt",
+      "prompt": "/31/b56379fc6c/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 14096,
+    "cache_creation_tokens": 677405,
+    "cache_read_tokens": 11633084,
+    "output_tokens": 92504,
+    "api_call_count": 103
+  }
+}
