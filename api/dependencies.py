@@ -33,11 +33,11 @@ def get_neo4j_client() -> Neo4jClient:
     neo4j_password = os.getenv("NEO4J_PASSWORD", "")
     neo4j_database = os.getenv("NEO4J_DATABASE", "")
 
-    print("Connecting to Neo4j with the following parameters:")
-    print(f"URI: {neo4j_uri}")
-    print(f"User: {neo4j_username}")
-    print(f"Database: {neo4j_database}")
-    print("Password: {}  # Do not print password for security reasons".format("********"))
+    # print("Connecting to Neo4j with the following parameters:")
+    # print(f"URI: {neo4j_uri}")
+    # print(f"User: {neo4j_username}")
+    # print(f"Database: {neo4j_database}")
+    # print("Password: {}  # Do not print password for security reasons".format("********"))
     
     # Check if required environment variables are set
     if not neo4j_uri:

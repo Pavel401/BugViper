@@ -1,4 +1,3 @@
-"""Pydantic models for the code review workflow."""
 
 import hashlib
 from typing import Any, Literal

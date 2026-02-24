@@ -159,10 +159,7 @@ def _extract_added_source_by_file(diff_text: str) -> Dict[str, str]:
     return {f: "\n".join(lines) for f, lines in files.items() if lines}
 
 
-# ==========================================================================
 # Import & symbol extraction from diff (tree-sitter powered)
-# ==========================================================================
-
 def extract_imports_from_diff(diff_text: str) -> List[Dict]:
     """
     Extract imports from the added lines of a diff using tree-sitter.
@@ -175,6 +172,7 @@ def extract_imports_from_diff(diff_text: str) -> List[Dict]:
     all_imports: List[Dict] = []
 
     # Group added source by file path
+
     added_source = _extract_added_source_by_file(diff_text)
 
     for file_path, source in added_source.items():
@@ -460,7 +458,7 @@ def _write_step(review_dir: Path, filename: str, content: str) -> None:
 # Main pipeline
 # ==========================================================================
 
-async def execute_pr_review(owner: str, repo: str, pr_number: int) -> None:
+async def execute_pr_review(owner: str, repo: str, pr_number: int, neo4j: Neo4jClient | None = None) -> None:
     """
     Full PR review pipeline.
 
@@ -551,12 +549,13 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int) -> None:
         ]))
 
         # ── Step 4: Connect to Neo4j and resolve context ────────────────
-        neo4j = Neo4jClient(
-            uri=os.environ.get("NEO4J_URI", ""),
-            user=os.environ.get("NEO4J_USERNAME", "neo4j"),
-            password=os.environ.get("NEO4J_PASSWORD", ""),
-            database=os.environ.get("NEO4J_DATABASE", "neo4j"),
-        )
+        if neo4j is None:
+            neo4j = Neo4jClient(
+                uri=os.environ.get("NEO4J_URI", ""),
+                user=os.environ.get("NEO4J_USERNAME", "neo4j"),
+                password=os.environ.get("NEO4J_PASSWORD", ""),
+                database=os.environ.get("NEO4J_DATABASE", "neo4j"),
+            )
         query_service = CodeQueryService(neo4j)
 
         # Single comprehensive graph query: affected symbols (with full source),

@@ -4,10 +4,12 @@ import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Request
 
+from api.dependencies import get_neo4j_client
 from api.services.cloud_tasks_service import CloudTasksService
 from api.services.ingestion_dispatch import call_ingestion_service
 from api.services.review_service import execute_pr_review
 from common.job_models import IncrementalPRPayload, IncrementalPushPayload
+from db.client import Neo4jClient
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +105,7 @@ async def on_push(
 async def on_comment(
     request: Request,
     background_tasks: BackgroundTasks,
+    neo4j: Neo4jClient = Depends(get_neo4j_client),
 ):
     """
     Receive GitHub webhooks for:
@@ -186,6 +189,6 @@ async def on_comment(
 
     logger.info(f"PR review triggered: {owner}/{repo_name}#{pr_number}")
 
-    background_tasks.add_task(execute_pr_review, owner, repo_name, pr_number)
+    background_tasks.add_task(execute_pr_review, owner, repo_name, pr_number, neo4j)
 
     return {"status": "processing", "pr": f"{owner}/{repo_name}#{pr_number}", "action": "review"}

@@ -347,34 +347,36 @@ class PythonLangTreeSitterParser:
                     
                     module_name = self._get_node_text(module_name_node)
                     
-                    # Handle 'from ... import ...'
-                    import_list_node = node.child_by_field_name('name')
-                    if import_list_node:
-                        for child in import_list_node.children:
-                            imported_name = None
-                            alias = None
-                            if child.type == 'aliased_import':
-                                name_node = child.child_by_field_name('name')
-                                alias_node = child.child_by_field_name('alias')
-                                if name_node: imported_name = self._get_node_text(name_node)
-                                if alias_node: alias = self._get_node_text(alias_node)
-                            elif child.type == 'dotted_name' or child.type == 'identifier':
-                                imported_name = self._get_node_text(child)
-                            
-                            if imported_name:
-                                full_import_name = f"{module_name}.{imported_name}"
-                                if full_import_name in seen_modules:                                                                                                
-                                    continue                                                                                                                        
-                                seen_modules.add(full_import_name) 
-                                imports.append({
-                                    "name": imported_name,
-                                    "full_import_name": full_import_name,
-                                    "line_number": child.start_point[0] + 1,
-                                    "alias": alias,
-                                    "context": self._get_parent_context(child)[:2],
-                                    "lang": self.language_name,
-                                    "is_dependency": False,
-                                })
+                    # Handle 'from ... import a, b, c'
+                    # tree-sitter gives each imported name its own 'name' field on the
+                    # import_from_statement node — child_by_field_name returns only the first,
+                    # so we use children_by_field_name to get all of them.
+                    import_name_nodes = node.children_by_field_name('name')
+                    for child in import_name_nodes:
+                        imported_name = None
+                        alias = None
+                        if child.type == 'aliased_import':
+                            name_node = child.child_by_field_name('name')
+                            alias_node = child.child_by_field_name('alias')
+                            if name_node: imported_name = self._get_node_text(name_node)
+                            if alias_node: alias = self._get_node_text(alias_node)
+                        elif child.type == 'dotted_name' or child.type == 'identifier':
+                            imported_name = self._get_node_text(child)
+
+                        if imported_name:
+                            full_import_name = f"{module_name}.{imported_name}"
+                            if full_import_name in seen_modules:
+                                continue
+                            seen_modules.add(full_import_name)
+                            imports.append({
+                                "name": imported_name,
+                                "full_import_name": full_import_name,
+                                "line_number": child.start_point[0] + 1,
+                                "alias": alias,
+                                "context": self._get_parent_context(child)[:2],
+                                "lang": self.language_name,
+                                "is_dependency": False,
+                            })
 
         return imports
 

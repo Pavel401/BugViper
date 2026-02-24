@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.13"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -287,6 +287,8 @@ source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "firebase-admin" },
+    { name = "google-cloud-tasks" },
+    { name = "httpx" },
     { name = "logfire" },
     { name = "nbconvert" },
     { name = "nbformat" },
@@ -320,6 +322,8 @@ requires-dist = [
     { name = "black", marker = "extra == 'dev'", specifier = ">=24.0.0" },
     { name = "fastapi", specifier = ">=0.128.0" },
     { name = "firebase-admin", specifier = ">=6.6.0" },
+    { name = "google-cloud-tasks", specifier = ">=2.16.0" },
+    { name = "httpx", specifier = ">=0.27.0" },
     { name = "logfire", specifier = ">=4.19.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8.0" },
     { name = "nbconvert", specifier = ">=7.16.0" },
@@ -1045,6 +1049,23 @@ wheels = [
 ]
 
 [[package]]
+name = "google-cloud-tasks"
+version = "2.21.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "google-api-core", extra = ["grpc"] },
+    { name = "google-auth" },
+    { name = "grpc-google-iam-v1" },
+    { name = "grpcio" },
+    { name = "proto-plus" },
+    { name = "protobuf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b6/58/0238b71de170b92ef359e53047a3d6ff9618c04ee255cbc6def53ab79e11/google_cloud_tasks-2.21.0.tar.gz", hash = "sha256:d28f33248553faf0ff029e1981aab56cd13bd933635c3bc33aa187675e7e14d1", size = 351784, upload-time = "2026-01-15T13:04:43.071Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b4/9d/a7f098037fb56f1d69fbfad95f58bf322a4d0dbb6cafcf380c9535730cc0/google_cloud_tasks-2.21.0-py3-none-any.whl", hash = "sha256:4bf288876892a0afac30658fc42925ccb732d3c4433a8ea568de1d67fde738f2", size = 295211, upload-time = "2026-01-15T13:02:52.377Z" },
+]
+
+[[package]]
 name = "google-crc32c"
 version = "1.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1107,6 +1128,11 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/c4/ab/09169d5a4612a5f92490806649ac8d41e3ec9129c636754575b3553f4ea4/googleapis_common_protos-1.72.0-py3-none-any.whl", hash = "sha256:4299c5a82d5ae1a9702ada957347726b167f9f8d1fc352477702a1e851ff4038", size = 297515, upload-time = "2025-11-06T18:29:13.14Z" },
 ]
 
+[package.optional-dependencies]
+grpc = [
+    { name = "grpcio" },
+]
+
 [[package]]
 name = "griffe"
 version = "1.15.0"
@@ -1134,6 +1160,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/3f/12/f4099a141677fcd2ed79dcc1fcec431e60c52e0e90c9c5d935f0ffaf8c0e/groq-1.0.0.tar.gz", hash = "sha256:66cb7bb729e6eb644daac7ce8efe945e99e4eb33657f733ee6f13059ef0c25a9", size = 146068, upload-time = "2025-12-17T23:34:23.115Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4a/88/3175759d2ef30406ea721f4d837bfa1ba4339fde3b81ba8c5640a96ed231/groq-1.0.0-py3-none-any.whl", hash = "sha256:6e22bf92ffad988f01d2d4df7729add66b8fd5dbfb2154b5bbf3af245b72c731", size = 138292, upload-time = "2025-12-17T23:34:21.957Z" },
+]
+
+[[package]]
+name = "grpc-google-iam-v1"
+version = "0.14.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "googleapis-common-protos", extra = ["grpc"] },
+    { name = "grpcio" },
+    { name = "protobuf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/76/1e/1011451679a983f2f5c6771a1682542ecb027776762ad031fd0d7129164b/grpc_google_iam_v1-0.14.3.tar.gz", hash = "sha256:879ac4ef33136c5491a6300e27575a9ec760f6cdf9a2518798c1b8977a5dc389", size = 23745, upload-time = "2025-10-15T21:14:53.318Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4a/bd/330a1bbdb1afe0b96311249e699b6dc9cfc17916394fd4503ac5aca2514b/grpc_google_iam_v1-0.14.3-py3-none-any.whl", hash = "sha256:7a7f697e017a067206a3dfef44e4c634a34d3dee135fe7d7a4613fe3e59217e6", size = 32690, upload-time = "2025-10-15T21:14:51.72Z" },
 ]
 
 [[package]]
