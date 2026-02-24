@@ -15,12 +15,12 @@ import importlib
 import logging
 import os
 import traceback
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
 from api.utils.comment_formatter import format_github_comment
 from api.utils.graph_context import build_graph_context_section
+from common.debug_writer import make_review_dir, write_step
 from api.services.firebase_service import firebase_service
 from common.firebase_models import PRMetadata, ReviewRunData
 from db.client import Neo4jClient
@@ -434,27 +434,6 @@ def _build_previous_issues_section(prev_run: dict) -> str:
 
 
 # ==========================================================================
-# Per-step debug dump helpers
-# ==========================================================================
-
-def _make_review_dir(owner: str, repo: str, pr_number: int) -> Path:
-    """Create and return a timestamped folder for this review run."""
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    review_dir = Path("output") / f"review-{timestamp}"
-    review_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Review debug dir: {review_dir}")
-    return review_dir
-
-
-def _write_step(review_dir: Path, filename: str, content: str) -> None:
-    """Write a single step's debug output to <review_dir>/<filename>.md."""
-    try:
-        (review_dir / filename).write_text(content, encoding="utf-8")
-    except Exception as e:
-        logger.warning(f"Failed to write {filename}: {e}")
-
-
-# ==========================================================================
 # Main pipeline
 # ==========================================================================
 
@@ -483,7 +462,7 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int, neo4j: Neo4jC
         repo_id = f"{owner}/{repo}"  # matches the repo identifier stored in the graph
 
         # Create a timestamped folder for this review run
-        review_dir = _make_review_dir(owner, repo, pr_number)
+        review_dir = make_review_dir(owner, repo, pr_number)
 
         # ── Step 1: Fetch diff from GitHub ──────────────────────────────
         gh = GitHubClient()
@@ -493,7 +472,7 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int, neo4j: Neo4jC
             return
         logger.info(f"Fetched diff ({len(diff_text)} chars)")
 
-        _write_step(review_dir, "01_diff.md", "\n".join([
+        write_step(review_dir, "01_diff.md", "\n".join([
             f"# Step 1 — Raw Diff",
             f"**PR:** {owner}/{repo}#{pr_number}",
             f"**Chars:** {len(diff_text)}",
@@ -508,7 +487,7 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int, neo4j: Neo4jC
         files_changed = list({c["file_path"] for c in changes})
         logger.info(f"Parsed {len(changes)} hunks across {len(files_changed)} files")
 
-        _write_step(review_dir, "02_parsed_diff.md", "\n".join([
+        write_step(review_dir, "02_parsed_diff.md", "\n".join([
             f"# Step 2 — Parsed Diff",
             f"**Hunks:** {len(changes)}  |  **Files changed:** {len(files_changed)}",
             "",
@@ -531,7 +510,7 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int, neo4j: Neo4jC
             f"{len(diff_functions)} functions, {len(diff_classes)} classes"
         )
 
-        _write_step(review_dir, "03_extracted_symbols.md", "\n".join([
+        write_step(review_dir, "03_extracted_symbols.md", "\n".join([
             f"# Step 3 — Extracted Imports & Symbols",
             "",
             f"## Imports ({len(diff_imports)})",
@@ -573,7 +552,7 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int, neo4j: Neo4jC
             f"{graph_context.get('total_imports', 0)} imports"
         )
 
-        _write_step(review_dir, "04_graph_context.md", "\n".join([
+        write_step(review_dir, "04_graph_context.md", "\n".join([
             "# Step 4 — Graph Context",
             "",
             f"**Affected symbols:** {len(graph_symbols)}",
@@ -596,7 +575,7 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int, neo4j: Neo4jC
         else:
             risk_level = "low"
 
-        _write_step(review_dir, "05_risk_level.md", "\n".join([
+        write_step(review_dir, "05_risk_level.md", "\n".join([
             "# Step 5 — Risk Level",
             "",
             f"**Risk level:** `{risk_level}`",
@@ -610,7 +589,7 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int, neo4j: Neo4jC
         # ── Step 6: Build context for LLM agents ───────────────────────
         agent_context = _build_agent_context(diff_text, graph_section)
 
-        _write_step(review_dir, "06_agent_context.md", "\n".join([
+        write_step(review_dir, "06_agent_context.md", "\n".join([
             "# Step 6 — Agent Context (graph + imports + callers)",
             "",
             agent_context,
@@ -665,7 +644,7 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int, neo4j: Neo4jC
             agent_context, full_file_snapshots, repo_id, pr_number
         )
 
-        _write_step(review_dir, "06b_review_prompt.md", "\n".join([
+        write_step(review_dir, "06b_review_prompt.md", "\n".join([
             "# Step 6b — Final Review Prompt (sent to LLM agents)",
             "",
             review_prompt,
