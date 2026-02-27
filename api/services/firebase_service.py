@@ -19,7 +19,6 @@ def _to_dict(data: BaseModel | dict[str, Any]) -> dict[str, Any]:
 logger = logging.getLogger(__name__)
 
 
-# ── Service Class ─────────────────────────────────────────────────────────────
 
 
 class BugViperFirebaseService:
