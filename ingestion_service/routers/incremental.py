@@ -1,28 +1,17 @@
 
 import logging
-import os
 
 from fastapi import APIRouter
 
 from common.job_models import IncrementalPRPayload, IncrementalPushPayload, IngestionTaskPayload, JobStatus
 from common.job_tracker import JobTrackerService
-from db.client import Neo4jClient
+from db.client import get_neo4j_client
 from ingestion_service.core.incremental_updater import handleCodePush, handleDirectPush
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 job_tracker = JobTrackerService()
-
-
-def _get_neo4j_client() -> Neo4jClient:
-    """Build a Neo4jClient from environment variables."""
-    return Neo4jClient(
-        uri=os.environ.get("NEO4J_URI", ""),
-        user=os.environ.get("NEO4J_USERNAME", "neo4j"),
-        password=os.environ.get("NEO4J_PASSWORD", ""),
-        database=os.environ.get("NEO4J_DATABASE", "neo4j"),
-    )
 
 
 @router.post("/tasks/incremental-pr")
@@ -52,7 +41,7 @@ async def handle_incremental_pr(payload: IncrementalPRPayload):
     try:
         job_tracker.update_status(job_id, JobStatus.RUNNING)
 
-        client = _get_neo4j_client()
+        client = get_neo4j_client()
         stats = await handleCodePush(
             owner=payload.owner,
             repo=payload.repo_name,
@@ -96,7 +85,7 @@ async def handle_incremental_push(payload: IncrementalPushPayload):
     try:
         job_tracker.update_status(job_id, JobStatus.RUNNING)
 
-        client = _get_neo4j_client()
+        client = get_neo4j_client()
         stats = await handleDirectPush(
             owner=payload.owner,
             repo=payload.repo_name,

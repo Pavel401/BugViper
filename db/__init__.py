@@ -1,6 +1,6 @@
 
 
-from .client import Neo4jClient
+from .client import Neo4jClient, get_neo4j_client
 from .schema import CodeGraphSchema, CYPHER_QUERIES
 from .ingestion import GraphIngestionService, IngestionStats
 from .queries import CodeQueryService
@@ -8,6 +8,7 @@ from .queries import CodeQueryService
 
 __all__ = [
     "Neo4jClient",
+    "get_neo4j_client",
     "CodeGraphSchema",
     "CYPHER_QUERIES",
     "GraphIngestionService",

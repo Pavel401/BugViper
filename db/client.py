@@ -1,6 +1,7 @@
 
 
 import logging
+import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
 from neo4j import GraphDatabase
@@ -130,3 +131,24 @@ class Neo4jClient:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit - close connection."""
         self.close()
+
+
+def get_neo4j_client() -> "Neo4jClient":
+    """Build a Neo4jClient from environment variables.
+
+    Reads NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD, and NEO4J_DATABASE.
+    Raises ValueError if required variables are missing.
+    """
+    uri = os.getenv("NEO4J_URI", "")
+    user = os.getenv("NEO4J_USERNAME", "neo4j")
+    password = os.getenv("NEO4J_PASSWORD", "")
+    database = os.getenv("NEO4J_DATABASE", "neo4j")
+
+    if not uri:
+        raise ValueError("NEO4J_URI environment variable is required")
+    if not user:
+        raise ValueError("NEO4J_USERNAME environment variable is required")
+    if not password:
+        raise ValueError("NEO4J_PASSWORD environment variable is required")
+
+    return Neo4jClient(uri=uri, user=user, password=password, database=database)

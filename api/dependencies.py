@@ -1,10 +1,8 @@
-from typing import Optional
-from fastapi import Depends, HTTPException, Request
-import os
+from fastapi import HTTPException, Request
 import logging
 
 import firebase_admin.auth
-from db import Neo4jClient
+from db import Neo4jClient, get_neo4j_client as _build_neo4j_client
 
 logger = logging.getLogger(__name__)
 
@@ -26,30 +24,4 @@ async def get_current_user(request: Request) -> dict:
 
 def get_neo4j_client() -> Neo4jClient:
     """Get Neo4j database client from environment variables."""
-    
-    # Get environment variables
-    neo4j_uri = os.getenv("NEO4J_URI", "")
-    neo4j_username = os.getenv("NEO4J_USERNAME", "")
-    neo4j_password = os.getenv("NEO4J_PASSWORD", "")
-    neo4j_database = os.getenv("NEO4J_DATABASE", "")
-
-    # print("Connecting to Neo4j with the following parameters:")
-    # print(f"URI: {neo4j_uri}")
-    # print(f"User: {neo4j_username}")
-    # print(f"Database: {neo4j_database}")
-    # print("Password: {}  # Do not print password for security reasons".format("********"))
-    
-    # Check if required environment variables are set
-    if not neo4j_uri:
-        raise ValueError("NEO4J_URI environment variable is required")
-    if not neo4j_username:
-        raise ValueError("NEO4J_USERNAME environment variable is required")
-    if not neo4j_password:
-        raise ValueError("NEO4J_PASSWORD environment variable is required")
-    
-    return Neo4jClient(
-        uri=neo4j_uri,
-        user=neo4j_username,
-        password=neo4j_password,
-        database=neo4j_database
-    )
+    return _build_neo4j_client()
