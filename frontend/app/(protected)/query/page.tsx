@@ -850,8 +850,8 @@ function ClassHierarchyView({ data }: { data: unknown }) {
               </span>
             )}
           </div>
-          {obj.docstring && (
-            <p className="text-xs text-muted-foreground italic">{String(obj.docstring)}</p>
+          {selfNode.docstring && (
+            <p className="text-xs text-muted-foreground italic">{selfNode.docstring}</p>
           )}
         </div>
         {selfNode.source_code ? (
