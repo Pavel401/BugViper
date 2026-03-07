@@ -7,6 +7,7 @@ from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 
 from common.github_client import GitHubAuthError, GitHubClient
+from common.embedder import embed_nodes_in_neo4j
 from db import Neo4jClient, CodeGraphSchema, GraphIngestionService
 from .jobs import JobManager
 from common.job_models import JobStatus
@@ -156,6 +157,20 @@ class AdvancedIngestionEngine:
                     f"https://github.com/{owner}/{repo_name}",
                     str(clone_path)
                 )
+
+                # Generate and store embeddings for semantic search via OpenRouter.
+                # Reads source_code from Neo4j nodes — does NOT need the cloned files.
+                # Safe to skip if OPENROUTER_API_KEY is not set.
+                if os.getenv("OPENROUTER_API_KEY"):
+                    print("\nGenerating embeddings for semantic search...")
+                    try:
+                        embed_stats = embed_nodes_in_neo4j(self.neo4j_client)
+                        for label, count in embed_stats.items():
+                            print(f"  ✓ Embedded {count} {label} nodes")
+                    except Exception as embed_err:
+                        print(f"  ⚠ Embedding skipped: {embed_err}")
+                else:
+                    print("\n⚠ OPENROUTER_API_KEY not set — skipping semantic embeddings")
 
                 # Clean up cloned repository
                 print("\nCleaning up cloned repository...")

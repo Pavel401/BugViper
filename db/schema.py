@@ -74,6 +74,13 @@ class CodeGraphSchema:
             "CREATE FULLTEXT INDEX code_search IF NOT EXISTS FOR (n:Class|Function|Method|Variable|Symbol) ON EACH [n.name, n.docstring, n.source_code]",
             "CREATE FULLTEXT INDEX symbol_search IF NOT EXISTS FOR (s:Symbol) ON EACH [s.name, s.qualified_name, s.docstring]",
             "CREATE FULLTEXT INDEX file_content_search IF NOT EXISTS FOR (f:File) ON EACH [f.source_code]",
+
+            # Vector indexes for semantic search (embedding stored on each node)
+            # dimensions=1536 matches text-embedding-3-small output size
+            "CREATE VECTOR INDEX function_semantic IF NOT EXISTS FOR (n:Function) ON (n.embedding) OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}",
+            "CREATE VECTOR INDEX class_semantic IF NOT EXISTS FOR (n:Class) ON (n.embedding) OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}",
+            "CREATE VECTOR INDEX method_semantic IF NOT EXISTS FOR (n:Method) ON (n.embedding) OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}",
+            "CREATE VECTOR INDEX file_semantic IF NOT EXISTS FOR (n:File) ON (n.embedding) OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}",
         ]
         
         for constraint in constraints:
