@@ -566,6 +566,20 @@ class IncrementalGraphUpdater:
             except Exception as e:
                 warning_logger(f"  Error rebuilding dependent files: {e}")
 
+        # ========== PHASE 9: EMBED NEW/MODIFIED NODES ==========
+        info_logger("PHASE 9: Generating embeddings for new/modified nodes...")
+        if os.getenv("OPENROUTER_API_KEY") and (files_to_add or files_to_modify):
+            try:
+                from common.embedder import embed_nodes_in_neo4j
+                embed_stats = embed_nodes_in_neo4j(self.neo4j_client)
+                for label, count in embed_stats.items():
+                    if count:
+                        info_logger(f"  ✓ Embedded {count} {label} nodes")
+            except Exception as embed_err:
+                info_logger(f"  ⚠ Embedding skipped: {embed_err}")
+        else:
+            info_logger("  Skipped (no OPENROUTER_API_KEY or no changed files)")
+
         # ========== FINAL SUMMARY ==========
         info_logger("=" * 60)
         info_logger("========== INCREMENTAL UPDATE COMPLETE ==========")

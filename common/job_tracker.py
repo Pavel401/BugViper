@@ -72,7 +72,10 @@ class JobTrackerService:
         if cloud_task_name is not None:
             data["cloud_task_name"] = cloud_task_name
 
-        self._db.collection(COLLECTION).document(job_id).update(data)
+        # set(merge=True) is an upsert — safe even if the document doesn't exist yet.
+        # This handles the Cloud Tasks path where the ingestion service receives a
+        # job ID that was never written to Firestore by the API service.
+        self._db.collection(COLLECTION).document(job_id).set(data, merge=True)
         logger.info("Job %s → %s", job_id, status.value)
 
     def list_jobs(self, limit: int = 20) -> list[IngestionJob]:

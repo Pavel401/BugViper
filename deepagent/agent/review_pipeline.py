@@ -1,4 +1,3 @@
-"""PR review pipeline using a single pydantic-ai reviewer agent."""
 
 import logging
 import os
