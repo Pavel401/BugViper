@@ -2,7 +2,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from langchain_core.messages import HumanMessage
 
 from api.agent.graph import build_graph
-from api.agent.source_extractor import extract_sources
 from api.models.rag import AskRequest, AskResponse
 from api.routers.query import get_query_service
 from db.code_serarch_layer import CodeSearchService
@@ -17,15 +16,14 @@ async def answer(
 ) -> AskResponse:
     """
     ReAct agent endpoint — reasons over the codebase using Neo4j tools.
-    The agent searches, explores, and synthesises a natural-language answer.
-    Sources are extracted from tool outputs and returned alongside the answer.
+    Sources accumulate in State.sources during the graph run via extract_sources_node;
+    no post-processing needed here.
     """
     try:
         agent = build_graph(query_service, repo_id=body.repo_id)
         result = await agent.ainvoke({"messages": [HumanMessage(content=body.question)]})
-        messages = result["messages"]
-        answer_text = messages[-1].content
-        sources = extract_sources(messages)
+        answer_text = result["messages"][-1].content
+        sources = result.get("sources", [])
         return AskResponse(answer=answer_text, sources=sources)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

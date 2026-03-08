@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routers import auth, ingestion, query, repository, webhook
+from api.routers import auth, ingestion, query, repository, webhook, rag
 from api.services.firebase_service import firebase_service  # noqa: F401 — init on import
 from api.middleware.firebase_auth import FirebaseAuthMiddleware
 import uvicorn
@@ -113,7 +113,11 @@ app.include_router(
     tags=["Auth"]
 )
 
-
+app.include_router(
+    rag.router,
+    prefix="/api/v1/rag",
+    tags=["Agent"]
+)
 
 
 
