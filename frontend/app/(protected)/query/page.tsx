@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback, type ReactNode } from "react";
+import { useState, useRef, useCallback, useEffect, type ReactNode } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -251,11 +251,12 @@ function SearchResultsView({ data }: { data: unknown }) {
 
 // ─── Search Tab ───────────────────────────────────────────────────────────────
 
-function SearchTab() {
+function SearchTab({ repoOwner, repoName }: { repoOwner: string; repoName: string }) {
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<unknown>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const filter = repoOwner && repoName ? { repoOwner, repoName } : undefined;
 
   const runSearch = async (q = query) => {
     const term = q.trim();
@@ -263,7 +264,7 @@ function SearchTab() {
     setLoading(true);
     setResults(null);
     try {
-      const data = await api.searchCode(term);
+      const data = await api.searchCode(term, 30, filter);
       setResults(data);
     } catch (e) {
       toast.error(`Search failed: ${e instanceof Error ? e.message : "Unknown error"}`);
@@ -1046,56 +1047,58 @@ type QueryDef = {
   renderResults?: (data: unknown) => ReactNode;
 };
 
-const queryGroups: Record<string, QueryDef[]> = {
-  Analysis: [
-    {
-      label: "Method Usages", placeholder: "Method name…",
-      fn: api.getMethodUsages, needsInput: true,
-      renderResults: (d) => <MethodUsagesView data={d as { usages: MethodUsageEntry[] }} />,
-    },
-    {
-      label: "Find Callers", placeholder: "Symbol name…",
-      fn: api.findCallers, needsInput: true,
-      renderResults: (d) => <FindCallersView data={d as FindCallersData} />,
-    },
-    {
-      label: "Class Hierarchy", placeholder: "Class name…",
-      fn: api.getClassHierarchy, needsInput: true,
-      renderResults: (d) => <ClassHierarchyView data={d} />,
-    },
-    {
-      label: "Change Impact", placeholder: "Symbol name…",
-      fn: api.getChangeImpact, needsInput: true,
-      renderResults: (d) => <ChangeImpactView data={d as { symbol: string; callers: CallerEntry[]; definitions?: FunctionDefinition[]; impact_level: string; usages: unknown }} />,
-    },
-  ],
-  CodeFinder: [
-    { label: "Function",    placeholder: "Function name…",     fn: api.findFunction,  needsInput: true,  renderResults: (d) => <CodeFinderResultsView data={d} /> },
-    { label: "Class",       placeholder: "Class name…",        fn: api.findClass,     needsInput: true,  renderResults: (d) => <CodeFinderResultsView data={d} /> },
-    { label: "Variable",    placeholder: "Variable name…",     fn: api.findVariable,  needsInput: true,  renderResults: (d) => <CodeFinderResultsView data={d} /> },
-    { label: "Content",     placeholder: "Content query…",     fn: api.findContent,   needsInput: true,  renderResults: (d) => <CodeFinderResultsView data={d} /> },
-    { label: "Module",      placeholder: "Module name…",       fn: api.findModule,    needsInput: true,  renderResults: (d) => <CodeFinderResultsView data={d} /> },
-    { label: "Imports",     placeholder: "Import name…",       fn: api.findImports,   needsInput: true,  renderResults: (d) => <CodeFinderResultsView data={d} /> },
-    { label: "Line Search", placeholder: "Code line to find…", fn: api.findByLine,    needsInput: true,  renderResults: (d) => <CodeFinderResultsView data={d} /> },
-  ],
-  Metrics: [
-    {
-      label: "Graph Stats", placeholder: "",
-      fn: api.getGraphStats, needsInput: false,
-      renderResults: (d) => <GraphStatsView data={d} />,
-    },
-    {
-      label: "Language Stats", placeholder: "",
-      fn: api.getLanguageStats, needsInput: false,
-      renderResults: (d) => <LanguageStatsView data={d} />,
-    },
-    {
-      label: "Top Complex Functions", placeholder: "",
-      fn: api.getTopComplexFunctions, needsInput: false,
-      renderResults: (d) => <ComplexFunctionsView data={d} />,
-    },
-  ],
-};
+function buildQueryGroups(filter: api.RepoFilter | undefined): Record<string, QueryDef[]> {
+  return {
+    Analysis: [
+      {
+        label: "Method Usages", placeholder: "Method name…",
+        fn: (q) => api.getMethodUsages(q, filter), needsInput: true,
+        renderResults: (d) => <MethodUsagesView data={d as { usages: MethodUsageEntry[] }} />,
+      },
+      {
+        label: "Find Callers", placeholder: "Symbol name…",
+        fn: (q) => api.findCallers(q, filter), needsInput: true,
+        renderResults: (d) => <FindCallersView data={d as FindCallersData} />,
+      },
+      {
+        label: "Class Hierarchy", placeholder: "Class name…",
+        fn: (q) => api.getClassHierarchy(q, filter), needsInput: true,
+        renderResults: (d) => <ClassHierarchyView data={d} />,
+      },
+      {
+        label: "Change Impact", placeholder: "Symbol name…",
+        fn: (q) => api.getChangeImpact(q, filter), needsInput: true,
+        renderResults: (d) => <ChangeImpactView data={d as { symbol: string; callers: CallerEntry[]; definitions?: FunctionDefinition[]; impact_level: string; usages: unknown }} />,
+      },
+    ],
+    CodeFinder: [
+      { label: "Function",    placeholder: "Function name…",     fn: (q) => api.findFunction(q, filter),  needsInput: true,  renderResults: (d) => <CodeFinderResultsView data={d} /> },
+      { label: "Class",       placeholder: "Class name…",        fn: (q) => api.findClass(q, filter),     needsInput: true,  renderResults: (d) => <CodeFinderResultsView data={d} /> },
+      { label: "Variable",    placeholder: "Variable name…",     fn: (q) => api.findVariable(q, filter),  needsInput: true,  renderResults: (d) => <CodeFinderResultsView data={d} /> },
+      { label: "Content",     placeholder: "Content query…",     fn: (q) => api.findContent(q, filter),   needsInput: true,  renderResults: (d) => <CodeFinderResultsView data={d} /> },
+      { label: "Module",      placeholder: "Module name…",       fn: (q) => api.findModule(q),            needsInput: true,  renderResults: (d) => <CodeFinderResultsView data={d} /> },
+      { label: "Imports",     placeholder: "Import name…",       fn: (q) => api.findImports(q, filter),   needsInput: true,  renderResults: (d) => <CodeFinderResultsView data={d} /> },
+      { label: "Line Search", placeholder: "Code line to find…", fn: (q) => api.findByLine(q, filter),    needsInput: true,  renderResults: (d) => <CodeFinderResultsView data={d} /> },
+    ],
+    Metrics: [
+      {
+        label: "Graph Stats", placeholder: "",
+        fn: (_q) => api.getGraphStats(), needsInput: false,
+        renderResults: (d) => <GraphStatsView data={d} />,
+      },
+      {
+        label: "Language Stats", placeholder: "",
+        fn: (_q) => api.getLanguageStats(filter), needsInput: false,
+        renderResults: (d) => <LanguageStatsView data={d} />,
+      },
+      {
+        label: "Top Complex Functions", placeholder: "",
+        fn: (_q) => api.getTopComplexFunctions(filter), needsInput: false,
+        renderResults: (d) => <ComplexFunctionsView data={d} />,
+      },
+    ],
+  };
+}
 
 function GenericQueryTab({ queries }: { queries: QueryDef[] }) {
   const [input, setInput]         = useState("");
@@ -1236,7 +1239,7 @@ function SemanticResultCard({ hit }: { hit: api.SemanticHit }) {
 
 // ─── Semantic Search Tab ──────────────────────────────────────────────────────
 
-function SemanticTab() {
+function SemanticTab({ repoOwner, repoName }: { repoOwner: string; repoName: string }) {
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<api.SemanticHit[] | null>(null);
@@ -1248,7 +1251,11 @@ function SemanticTab() {
     setLoading(true);
     setResults(null);
     try {
-      const res = await api.askCode({ question });
+      const res = await api.askCode({
+        question,
+        repoOwner: repoOwner || undefined,
+        repoName: repoName || undefined,
+      });
       setResults(res.results);
     } catch (e) {
       toast.error(`Search failed: ${e instanceof Error ? e.message : "Unknown error"}`);
@@ -1322,6 +1329,22 @@ export default function QueryPage() {
   const [diffLoading, setDiffLoading]         = useState(false);
   const [diffResults, setDiffResults]         = useState<unknown>(null);
 
+  // Shared repo selector
+  const [repos, setRepos] = useState<{ fullName?: string; owner?: string; repoName?: string }[]>([]);
+  const [selectedRepo, setSelectedRepo] = useState("");
+
+  useEffect(() => {
+    api.listRepositories()
+      .then((data: { repositories?: { fullName?: string; owner?: string; repoName?: string }[] }) =>
+        setRepos(data?.repositories ?? []))
+      .catch(() => {});
+  }, []);
+
+  const [repoOwner, repoName] = selectedRepo ? selectedRepo.split("/") : ["", ""];
+  const filter: api.RepoFilter | undefined =
+    repoOwner && repoName ? { repoOwner, repoName } : undefined;
+  const queryGroups = buildQueryGroups(filter);
+
   const runDiffContext = async () => {
     if (!diffRepoId.trim()) { toast.error("Enter a repository ID"); return; }
     const lines = diffChangesText.trim().split("\n").filter(Boolean);
@@ -1354,6 +1377,26 @@ export default function QueryPage() {
         </p>
       </div>
 
+      {/* Shared repo selector */}
+      <div className="flex items-center gap-3">
+        <label className="text-sm text-muted-foreground shrink-0">Repository:</label>
+        <div className="relative">
+          <select
+            value={selectedRepo}
+            onChange={(e) => setSelectedRepo(e.target.value)}
+            className="appearance-none rounded-lg border border-input bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer"
+          >
+            <option value="">All repositories</option>
+            {repos.map((r) => {
+              const label = r.fullName ?? (r.owner && r.repoName ? `${r.owner}/${r.repoName}` : null);
+              if (!label) return null;
+              return <option key={label} value={label}>{label}</option>;
+            })}
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+        </div>
+      </div>
+
       <Tabs defaultValue="Ask">
         <TabsList>
           <TabsTrigger value="Ask" className="gap-1.5">
@@ -1377,16 +1420,16 @@ export default function QueryPage() {
         </TabsList>
 
         <TabsContent value="Ask">
-          <SemanticTab />
+          <SemanticTab repoOwner={repoOwner} repoName={repoName} />
         </TabsContent>
 
         <TabsContent value="Search">
-          <SearchTab />
+          <SearchTab repoOwner={repoOwner} repoName={repoName} />
         </TabsContent>
 
         {Object.entries(queryGroups).map(([group, queries]) => (
           <TabsContent key={group} value={group}>
-            <GenericQueryTab queries={queries} />
+            <GenericQueryTab key={`${group}-${selectedRepo}`} queries={queries} />
           </TabsContent>
         ))}
 

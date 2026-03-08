@@ -8,6 +8,7 @@ import { useAuth } from "@/lib/auth-context";
 const nav = [
   { href: "/repositories", label: "Repositories", icon: "M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" },
   { href: "/query", label: "Query", icon: "M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" },
+  { href: "/agent", label: "Ask Agent", icon: "M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-3 3v-3z" },
 ];
 
 export function Sidebar() {
@@ -20,6 +21,7 @@ export function Sidebar() {
         <BugViperLogo size={32} />
         <span className="text-lg font-bold text-primary">BugViper</span>
       </div>
+
       <nav className="flex-1 px-2 py-4 space-y-1">
         {nav.map((item) => {
           const active = pathname === item.href;
@@ -46,24 +48,15 @@ export function Sidebar() {
         <div className="border-t border-sidebar-border px-3 py-4 space-y-3">
           <div className="flex items-center gap-3">
             {user.photoURL ? (
-              <img
-                src={user.photoURL}
-                alt=""
-                className="w-8 h-8 rounded-full"
-                referrerPolicy="no-referrer"
-              />
+              <img src={user.photoURL} alt="" className="w-8 h-8 rounded-full" referrerPolicy="no-referrer" />
             ) : (
               <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center text-xs font-medium text-primary">
                 {(user.displayName?.[0] || user.email?.[0] || "?").toUpperCase()}
               </div>
             )}
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium truncate">
-                {user.displayName || "User"}
-              </p>
-              <p className="text-xs text-muted-foreground truncate">
-                {user.email}
-              </p>
+              <p className="text-sm font-medium truncate">{user.displayName || "User"}</p>
+              <p className="text-xs text-muted-foreground truncate">{user.email}</p>
             </div>
           </div>
           <button

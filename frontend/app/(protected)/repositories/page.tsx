@@ -13,6 +13,7 @@ import {
   ingestGithub,
   getIngestionJobStatus,
   getGitHubRepos,
+  embedRepository,
   type GitHubRepo,
 } from "@/lib/api";
 
@@ -134,10 +135,14 @@ function RepoCard({
   repo,
   liveStatus,
   onDelete,
+  onReEmbed,
+  isEmbedding,
 }: {
   repo: FirestoreRepo;
   liveStatus?: string;
   onDelete: () => void;
+  onReEmbed: () => void;
+  isEmbedding: boolean;
 }) {
   const status = liveStatus ?? repo.ingestionStatus;
   const key = `${repo.owner}/${repo.repoName}`;
@@ -184,16 +189,38 @@ function RepoCard({
           )}
         </div>
 
-        {/* Delete button */}
-        <button
-          onClick={onDelete}
-          aria-label={`Delete ${key}`}
-          className="p-1.5 rounded-md text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-destructive hover:bg-destructive/10 transition-all shrink-0"
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-          </svg>
-        </button>
+        {/* Action buttons */}
+        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all shrink-0">
+          {/* Re-embed button */}
+          <button
+            onClick={onReEmbed}
+            disabled={isEmbedding}
+            aria-label={`Re-embed ${key}`}
+            title="Re-run semantic embeddings"
+            className="p-1.5 rounded-md text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <svg
+              className={`w-4 h-4 ${isEmbedding ? "animate-spin" : ""}`}
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              viewBox="0 0 24 24"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+          </button>
+
+          {/* Delete button */}
+          <button
+            onClick={onDelete}
+            aria-label={`Delete ${key}`}
+            className="p-1.5 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+          </button>
+        </div>
       </div>
 
       {/* Stats row */}
@@ -298,6 +325,9 @@ export default function RepositoriesPage() {
   // Delete dialog
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // Re-embed
+  const [embeddingRepo, setEmbeddingRepo] = useState<string | null>(null);
 
   // Active ingestion jobs (keyed by full_name e.g. "Pavel401/JobsScraper")
   const [ingestingJobs, setIngestingJobs] = useState<Record<string, IngestingJob>>({});
@@ -411,6 +441,24 @@ export default function RepositoriesPage() {
     }
   }
 
+  async function handleReEmbed(owner: string, repoName: string) {
+    const key = `${owner}/${repoName}`;
+    setEmbeddingRepo(key);
+    try {
+      const res = await embedRepository(owner, repoName);
+      const count = res.nodes_embedded ?? 0;
+      toast.success(
+        count > 0
+          ? `Embedded ${count} nodes for ${key}`
+          : `All nodes already had embeddings for ${key}`
+      );
+    } catch (err) {
+      toast.error(`Re-embed failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+    } finally {
+      setEmbeddingRepo(null);
+    }
+  }
+
   async function confirmDelete() {
     if (!deleteTarget) return;
     setIsDeleting(true);
@@ -492,6 +540,8 @@ export default function RepositoriesPage() {
                   repo={repo}
                   liveStatus={job?.status}
                   onDelete={() => setDeleteTarget(`${repo.owner}/${repo.repoName}`)}
+                  onReEmbed={() => handleReEmbed(repo.owner, repo.repoName)}
+                  isEmbedding={embeddingRepo === key}
                 />
               );
             })}
