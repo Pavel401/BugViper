@@ -1,6 +1,6 @@
 # ── Unrelated services ───────────────────────────────────────────────────────
 api/
-deepagent/
+code_review_agent/
 frontend/
 node_modules/
 

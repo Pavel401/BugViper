@@ -24,7 +24,7 @@ ENV PATH="/app/.venv/bin:$PATH"
 COPY api/ api/
 COPY common/ common/
 COPY db/ db/
-COPY deepagent/ deepagent/
+COPY code_review_agent/ code_review_agent/
 
 
 EXPOSE 8080
