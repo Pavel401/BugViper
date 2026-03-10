@@ -346,6 +346,34 @@ export const analyzeRelationships = (queryType: string, target: string, context?
   return apiFetch(endpoint);
 };
 
+// Support
+export interface SupportQueryPayload {
+  name: string;
+  email: string;
+  subject: string;
+  category: string;
+  message: string;
+  priority?: string;
+}
+
+export interface SupportQueryResult {
+  query_id: string;
+  message: string;
+}
+
+export const submitSupportQuery = (data: SupportQueryPayload): Promise<SupportQueryResult> =>
+  fetch(`${API_BASE}/api/v1/support/query`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  }).then(async (res) => {
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || `API error: ${res.status}`);
+    }
+    return res.json();
+  });
+
 // Default export for direct api.X() usage in components
 const api = {
   findMethodUsages,

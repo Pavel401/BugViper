@@ -21,6 +21,8 @@ PUBLIC_PREFIXES: tuple[str, ...] = (
     # Note: /auth/login and /auth/ensure are NOT public.
     # Firebase auth happens client-side first — the client always has a token
     # before calling these endpoints.
+    # Customer support queries are public — no sign-in required.
+    "/api/v1/support",
 )
 
 

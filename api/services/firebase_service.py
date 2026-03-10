@@ -353,6 +353,38 @@ class BugViperFirebaseService:
         logger.info(f"Saved review run {run_id} for {owner}/{repo}#{pr_number}")
         return run_id
 
+    # ── Customer support ──────────────────────────────────────────────────
+
+    def save_customer_query(
+        self,
+        name: str,
+        email: str,
+        subject: str,
+        category: str,
+        message: str,
+        priority: str = "medium",
+    ) -> str:
+        """
+        Save a customer support query to the top-level ``customer_queries`` collection.
+
+        Returns the auto-generated Firestore document ID.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        doc_ref = self._db.collection("customer_queries").document()
+        doc_ref.set({
+            "name": name,
+            "email": email,
+            "subject": subject,
+            "category": category,
+            "message": message,
+            "priority": priority,
+            "status": "open",
+            "createdAt": now,
+            "updatedAt": now,
+        })
+        logger.info("Saved customer query %s from %s", doc_ref.id, email)
+        return doc_ref.id
+
     def get_latest_review_run(
         self, uid: str, owner: str, repo: str, pr_number: int
     ) -> Optional[dict]:
