@@ -107,7 +107,7 @@ When you add a repository, BugViper:
 6. Optionally batch-embeds all nodes with `text-embedding-3-small` → stores vectors in Neo4j vector indexes
 
 ```
-GitHub / local path
+    GitHub 
        │
        ▼
   Tree-sitter AST (17 languages)
@@ -210,13 +210,24 @@ The agent has **19 tools**:
 
 After exploration, a second LLM call receives all accumulated messages plus a JSON schema embedded directly in the system prompt. The response is parsed robustly — handles code fences, prose wrapping, and raw JSON — so any model on OpenRouter works without needing structured-output API support.
 
-Issues are filtered at **confidence ≥ 7/10** before posting. Each issue carries:
-- `severity`: `critical` / `high` / `medium` / `low`
-- `category`: `bug` / `security` / `style` / `performance`
-- `confidence`: 1–10
-- `suggestion`: a specific code fix with a suggested diff
+
 
 ---
+
+
+## Graph Schema
+
+**Node types**: `Repository` · `File` · `Function` · `Class` · `Variable` · `Module`
+
+**Relationships**:
+```
+(Repository)-[:CONTAINS]──►(File)
+(File)-[:CONTAINS]─────────►(Function | Class | Variable)
+(File)-[:IMPORTS]──────────►(Module)
+(Class)-[:CONTAINS]────────►(Function)
+(Class)-[:INHERITS]────────►(Class)
+(Function)-[:CALLS]────────►(Function)
+```
 
 ## Tech Stack
 
@@ -353,19 +364,6 @@ INGESTION_SERVICE_URL=         # empty = local; set = Cloud Tasks
 
 ---
 
-## Graph Schema
-
-**Node types**: `Repository` · `File` · `Function` · `Class` · `Variable` · `Module`
-
-**Relationships**:
-```
-(Repository)-[:CONTAINS]──►(File)
-(File)-[:CONTAINS]─────────►(Function | Class | Variable)
-(File)-[:IMPORTS]──────────►(Module)
-(Class)-[:CONTAINS]────────►(Function)
-(Class)-[:INHERITS]────────►(Class)
-(Function)-[:CALLS]────────►(Function)
-```
 
 **Cyclomatic complexity** is stored on every `Function` node at ingestion time:
 
@@ -421,8 +419,4 @@ cd frontend && npm run lint && npm run build
 - [ ] GitHub push, PR, and branch webhook coverage
 - [ ] Auto-tag CLAUDE.md from ingested repo
 
----
 
-## License
-
-MIT
