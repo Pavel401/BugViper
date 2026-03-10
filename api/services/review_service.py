@@ -13,21 +13,21 @@ Orchestrates the full review pipeline:
 import asyncio
 import importlib
 import logging
-import os
 import traceback
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
-from api.utils.comment_formatter import format_github_comment
+from api.utils.comment_formatter import format_github_comment, format_inline_comment, format_review_summary
 from api.utils.graph_context import build_graph_context_section
 from common.languages import EXT_TO_LANG, LANG_PARSER_REGISTRY
+from common.call_skip import get_call_skip
 from common.debug_writer import make_review_dir, write_step
 from api.services.firebase_service import firebase_service
 from common.firebase_models import PRMetadata, ReviewRunData
 from db.client import Neo4jClient, get_neo4j_client
 from db.code_serarch_layer import CodeSearchService
-from deepagent.models.agent_schemas import ContextData, FileSummary, Issue, ReconciledReview
-from deepagent.agent.review_pipeline import run_review
+from code_review_agent.models.agent_schemas import ContextData, FileSummary, Issue, ReconciledReview
+from code_review_agent.agent.runner import run_review
 from common.github_client import GitHubClient
 from common.diff_parser import parse_unified_diff
 
@@ -207,6 +207,83 @@ def extract_symbols_from_diff(
             logger.warning(f"Symbol extraction failed for {file_path}: {e}")
 
     return functions, classes
+
+
+def _collect_call_names(node) -> Set[str]:
+    """Recursively walk a tree-sitter AST and collect every called name.
+
+    Handles the two common shapes across languages:
+      - Direct call:   ``func()``      → identifier child of call/call_expression
+      - Method call:   ``obj.method()`` → attribute/member child; we take the
+                       right-hand name (the method, not the object)
+    """
+    names: Set[str] = set()
+
+    if node.type in ("call", "call_expression", "new_expression"):
+        fn = node.child_by_field_name("function") or node.child_by_field_name("constructor")
+        if fn:
+            if fn.type in ("identifier", "simple_identifier"):
+                try:
+                    names.add(fn.text.decode("utf-8"))
+                except Exception:
+                    pass
+            elif fn.type in ("attribute", "member_expression", "field_expression",
+                              "qualified_identifier", "scoped_identifier"):
+                attr = (
+                    fn.child_by_field_name("attribute")
+                    or fn.child_by_field_name("property")
+                    or fn.child_by_field_name("field")
+                )
+                if attr:
+                    try:
+                        names.add(attr.text.decode("utf-8"))
+                    except Exception:
+                        pass
+
+    for child in node.children:
+        names |= _collect_call_names(child)
+
+    return names
+
+
+def extract_referenced_names_from_diff(
+    diff_text: str,
+    file_contents: Dict[str, str] | None = None,
+) -> Set[str]:
+    """Extract names of all functions and methods *called* in the PR's new code.
+
+    Distinct from ``extract_symbols_from_diff`` (which finds *definitions*):
+    this finds *usages* — what the new code actually invokes at runtime.
+    Uses tree-sitter call-expression nodes so it works across all supported
+    languages without any regex heuristics.
+
+    Skip sets are applied per-language via ``common.call_skip.get_call_skip``
+    so builtins/stdlib noise is filtered correctly for each of the 17 supported
+    languages rather than using a single Python-only list.
+    """
+    referenced: Set[str] = set()
+    added_source = _extract_added_source_by_file(diff_text)
+
+    for file_path, fallback_source in added_source.items():
+        ext = Path(file_path).suffix.lower()
+        lang = EXT_TO_LANG.get(ext)
+        if not lang:
+            continue
+
+        parser = _get_lang_parser(lang)
+        if not parser:
+            continue
+
+        skip = get_call_skip(lang)
+        source = (file_contents or {}).get(file_path) or fallback_source
+        try:
+            tree = parser.parser.parse(source.encode("utf-8"))
+            names = _collect_call_names(tree.root_node)
+            referenced |= names - skip
+        except Exception as e:
+            logger.warning(f"Reference extraction failed for {file_path}: {e}")
+
+    return referenced
 
 
 # ==========================================================================
@@ -495,13 +572,21 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int, neo4j: Neo4jC
             f"Fetched full content for {len(full_file_contents)}/{len(files_changed)} files"
         )
 
-        # ── Step 3: Extract imports & symbols (full file preferred) ─────
+        # ── Step 3: Extract imports, defined symbols, and call sites ────
         diff_imports = extract_imports_from_diff(diff_text, full_file_contents)
         diff_functions, diff_classes = extract_symbols_from_diff(diff_text, full_file_contents)
         all_diff_symbols = diff_functions | diff_classes
+
+        # Step 3b: referenced names — what the new code actually *calls*
+        # (distinct from what it defines or imports)
+        all_referenced = extract_referenced_names_from_diff(diff_text, full_file_contents)
+        # External refs: called names that aren't defined in the diff itself
+        external_refs = all_referenced - diff_functions - diff_classes
+
         logger.info(
             f"Diff extraction: {len(diff_imports)} imports, "
-            f"{len(diff_functions)} functions, {len(diff_classes)} classes"
+            f"{len(diff_functions)} functions, {len(diff_classes)} classes, "
+            f"{len(external_refs)} external call-sites"
         )
 
         write_step(review_dir, "03_extracted_symbols.md", "\n".join([
@@ -514,11 +599,14 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int, neo4j: Neo4jC
                 for imp in diff_imports
             ],
             "",
-            f"## Functions ({len(diff_functions)})",
+            f"## Functions defined ({len(diff_functions)})",
             *[f"- `{fn}`" for fn in sorted(diff_functions)],
             "",
-            f"## Classes ({len(diff_classes)})",
+            f"## Classes defined ({len(diff_classes)})",
             *[f"- `{cls}`" for cls in sorted(diff_classes)],
+            "",
+            f"## External call-sites ({len(external_refs)}) — called but defined elsewhere",
+            *[f"- `{name}`" for name in sorted(external_refs)],
         ]))
 
         # ── Step 4: Connect to Neo4j and resolve context ────────────────
@@ -530,6 +618,60 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int, neo4j: Neo4jC
         # callers, outbound dependencies, imports, and class hierarchy.
         graph_context = query_service.get_diff_context_enhanced(repo_id, changes)
         graph_symbols = graph_context.get("affected_symbols", [])
+
+        # ── Step 4b: Resolve used symbols not found via file-path queries ──
+        # Covers two cases:
+        #   1. New files (not yet in graph) → get_diff_context_enhanced returns
+        #      nothing; we resolve imports + call-sites by name directly.
+        #   2. Existing files → we enrich the already-found context with any
+        #      called symbols whose source wasn't pulled in by the hunk query.
+        #
+        # Resolution pool = imported names  ∪  external call-site names.
+        # We query by name, keep only in-repo results, and cap at 30 to avoid
+        # flooding the context with noise.
+        import_names = {imp.get("name", "") for imp in diff_imports}
+        resolve_pool = (import_names | external_refs) - all_diff_symbols
+        resolve_pool = {n for n in resolve_pool if n and len(n) >= 3}
+
+        already_in_context = {s.get("name") for s in graph_context.get("affected_symbols", [])}
+        already_in_context |= {s.get("name") for s in graph_context.get("imports", [])}
+
+        fallback_imports: list[dict] = []
+        seen_names: set[str] = set()
+
+        for name in sorted(resolve_pool):  # sorted for determinism
+            if name in seen_names or name in already_in_context:
+                continue
+            if len(fallback_imports) >= 30:  # cap to keep context manageable
+                break
+            seen_names.add(name)
+
+            for finder, sym_type in (
+                (query_service.find_by_function_name, "function"),
+                (query_service.find_by_class_name, "class"),
+            ):
+                results = finder(name, fuzzy_search=False, repo_id=repo_id)
+                in_repo = [r for r in results if repo_id in (r.get("path") or "")]
+                if in_repo:
+                    r = in_repo[0]
+                    fallback_imports.append({
+                        "name": r.get("name", name),
+                        "type": sym_type,
+                        "path": r.get("path", ""),
+                        "source": r.get("source") or r.get("source_code") or "",
+                        "docstring": r.get("docstring") or "",
+                    })
+                    break
+
+        if fallback_imports:
+            existing = graph_context.get("imports", [])
+            graph_context["imports"] = existing + fallback_imports
+            graph_context["total_imports"] = len(graph_context["imports"])
+            logger.info(
+                f"Used-symbol resolution: {len(fallback_imports)} in-repo symbols resolved "
+                f"(from {len(import_names)} imports + {len(external_refs)} call-sites)"
+            )
+
         graph_section = build_graph_context_section(graph_context)
 
         total_callers = sum(
@@ -616,7 +758,7 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int, neo4j: Neo4jC
             review_prompt,
         ]))
 
-        review_results = await run_review(review_prompt, repo_id, pr_number)
+        review_results = await run_review(review_prompt, repo_id, pr_number, query_service)
         review_results.files_changed_summary = _parse_files_changed(
             diff_text, review_results.issues, walk_through=review_results.walk_through
         )
@@ -640,21 +782,70 @@ async def execute_pr_review(owner: str, repo: str, pr_number: int, neo4j: Neo4jC
             )
             firebase_service.save_review_run(uid, owner, repo, pr_number, run_doc)
 
-        # ── Step 11: Format and post comment ─────────────────────────────
+        # ── Step 11: Post PR review + inline comments ────────────────────
         context_data = ContextData(
             files_changed=files_changed,
             modified_symbols=changed_symbol_names,
             total_callers=total_callers,
             risk_level=risk_level,
         )
-        final_comment = format_github_comment(
+
+        # Build set of (file, line) pairs that are valid diff targets so we
+        # only attempt inline comments on lines actually in the diff.
+        valid_diff_lines: set[tuple[str, int]] = set()
+        for hunk in changes:
+            for ln in range(int(hunk["start_line"]), int(hunk["end_line"]) + 1):
+                valid_diff_lines.add((hunk["file_path"], ln))
+
+        # Determine review event: request changes for critical/high issues
+        actionable_issues = [i for i in reconciled.issues if i.status in ("new", "still_open")]
+        has_blocking = any(i.severity in ("critical", "high") for i in actionable_issues)
+        review_event = "REQUEST_CHANGES" if has_blocking else "COMMENT"
+
+        # Post inline comments for each actionable issue
+        inline_posted = 0
+        inline_skipped = 0
+        for issue in actionable_issues:
+            if (issue.file, issue.line_start) in valid_diff_lines:
+                body = format_inline_comment(issue)
+                ok = await gh.post_inline_comment(
+                    owner, repo, pr_number, head_sha, issue.file, issue.line_start, body
+                )
+                if ok:
+                    inline_posted += 1
+                else:
+                    inline_skipped += 1
+            else:
+                inline_skipped += 1
+
+        logger.info(
+            "Inline comments: %d posted, %d skipped (outside diff)",
+            inline_posted, inline_skipped,
+        )
+
+        # Post the formal PR review with summary body
+        review_body = format_review_summary(
             reconciled, context_data, pr_number,
             files_changed_summary=review_results.files_changed_summary,
             walk_through=review_results.walk_through,
-            raw_agent_json=review_results.model_dump_json(indent=2),
+            inline_posted=inline_posted,
+            inline_skipped=inline_skipped,
         )
-        await gh.post_comment(owner, repo, pr_number, final_comment)
-        logger.info(f"Posted review comment on {owner}/{repo}#{pr_number}")
+        try:
+            await gh.post_pr_review(owner, repo, pr_number, head_sha, review_body, review_event)
+            logger.info(
+                "Posted PR review (%s) on %s/%s#%s", review_event, owner, repo, pr_number
+            )
+        except Exception:
+            # Fall back to a plain issue comment if the review API fails
+            logger.warning("PR review API failed — falling back to issue comment")
+            fallback = format_github_comment(
+                reconciled, context_data, pr_number,
+                files_changed_summary=review_results.files_changed_summary,
+                walk_through=review_results.walk_through,
+            )
+            await gh.post_comment(owner, repo, pr_number, fallback)
+            logger.info(f"Posted fallback comment on {owner}/{repo}#{pr_number}")
 
 
     except Exception:

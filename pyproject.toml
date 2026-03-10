@@ -37,7 +37,6 @@ dependencies = [
     "python-multipart>=0.0.21",
     "pygithub>=2.8.1",
     # Agent dependencies
-    "pydantic-ai[openrouter]>=1.47.0",
     "openai>=2.15.0",
     "logfire>=4.19.0",
     # HTTP client (for inter-service calls in local dev)

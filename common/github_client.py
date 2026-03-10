@@ -388,3 +388,68 @@ class GitHubClient:
             issue.create_comment(body)
 
         await asyncio.to_thread(_post)
+
+    async def post_pr_review(
+        self,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        commit_sha: str,
+        body: str,
+        event: str = "COMMENT",
+    ) -> None:
+        """Submit a formal PR review (COMMENT, REQUEST_CHANGES, or APPROVE).
+
+        The review body appears as the top-level review summary. Inline
+        comments are posted separately via post_inline_comment().
+
+        Args:
+            event: One of "COMMENT", "REQUEST_CHANGES", "APPROVE".
+        """
+        def _post():
+            github = self._get_github_instance(owner, repo)
+            repository = github.get_repo(f"{owner}/{repo}")
+            pr = repository.get_pull(pr_number)
+            commit = repository.get_commit(commit_sha)
+            pr.create_review(commit=commit, body=body, event=event)
+
+        await asyncio.to_thread(_post)
+
+    async def post_inline_comment(
+        self,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        commit_sha: str,
+        path: str,
+        line: int,
+        body: str,
+    ) -> bool:
+        """Post a single inline review comment on a specific diff line.
+
+        Returns True on success, False if the line is not part of the diff
+        (GitHub returns 422) or any other error occurs.
+        """
+        def _post():
+            github = self._get_github_instance(owner, repo)
+            repository = github.get_repo(f"{owner}/{repo}")
+            pr = repository.get_pull(pr_number)
+            commit = repository.get_commit(commit_sha)
+            pr.create_review_comment(
+                body=body,
+                commit=commit,
+                path=path,
+                line=line,
+                side="RIGHT",
+            )
+
+        try:
+            await asyncio.to_thread(_post)
+            return True
+        except Exception as e:
+            # 422 = line not in diff; log at debug level to avoid noise
+            import logging
+            logging.getLogger(__name__).debug(
+                "Inline comment skipped for %s:%s — %s", path, line, e
+            )
+            return False

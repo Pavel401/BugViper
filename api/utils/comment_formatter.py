@@ -1,10 +1,37 @@
 
 from collections import defaultdict
 
-from deepagent.config import config
-from deepagent.models.agent_schemas import ContextData, FileSummary, Issue, ReconciledReview
+from code_review_agent.config import config
+from code_review_agent.models.agent_schemas import ContextData, FileSummary, Issue, ReconciledReview
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+_LANG_MAP = {
+    "py": "python", "ts": "typescript", "tsx": "typescript",
+    "js": "javascript", "jsx": "javascript", "rb": "ruby",
+    "go": "go", "rs": "rust", "java": "java", "cs": "csharp",
+    "cpp": "cpp", "c": "c",
+}
+
+
+def _file_lang(path: str) -> str:
+    ext = path.rsplit(".", 1)[-1] if "." in path else ""
+    return _LANG_MAP.get(ext, ext)
+
+
+def _ai_fix_to_suggestion(ai_fix: str) -> str | None:
+    """Convert a unified-diff ai_fix into a GitHub suggestion block.
+
+    Extracts the '+' lines (new code) so the PR author can apply the fix
+    with a single click. Returns None if there are no '+' lines.
+    """
+    plus_lines = [
+        line[1:] for line in ai_fix.strip().splitlines()
+        if line.startswith("+") and not line.startswith("+++")
+    ]
+    if not plus_lines:
+        return None
+    return "```suggestion\n" + "\n".join(plus_lines) + "\n```"
 
 _SEV_LABEL = {
     "critical": "🔴 Critical",
@@ -93,6 +120,157 @@ def _render_issues_by_file(issues: list[Issue]) -> list[str]:
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
+def format_inline_comment(issue: Issue) -> str:
+    """Format one issue as an inline PR review comment body.
+
+    If the issue has an ai_fix, converts it to a GitHub suggestion block
+    so the PR author can apply it with one click.
+    """
+    sev = _SEV_LABEL.get(issue.severity, issue.severity.capitalize())
+    lang = _file_lang(issue.file)
+
+    lines: list[str] = [
+        f"**{sev} · {issue.title}**",
+        "",
+        issue.description,
+    ]
+
+    if issue.impact:
+        lines += ["", f"**Impact:** {issue.impact}"]
+
+    if issue.suggestion:
+        lines += ["", f"**Suggestion:** {issue.suggestion}"]
+
+    if issue.ai_fix:
+        suggestion = _ai_fix_to_suggestion(issue.ai_fix)
+        if suggestion:
+            lines += ["", suggestion]
+        else:
+            lines += ["", "```diff", issue.ai_fix.strip(), "```"]
+    elif issue.code_snippet:
+        lines += ["", f"```{lang}", issue.code_snippet.strip(), "```"]
+
+    lines += ["", f"*Category: `{issue.category}` · Confidence: {issue.confidence}/10*"]
+    return "\n".join(lines)
+
+
+def format_review_summary(
+    review: ReconciledReview,
+    context: ContextData | None,
+    pr_number: int,
+    files_changed_summary: list[FileSummary] | None = None,
+    walk_through: list[str] | None = None,
+    inline_posted: int = 0,
+    inline_skipped: int = 0,
+) -> str:
+    """Format the top-level PR review body (overview only).
+
+    Individual issue details are posted as inline comments; this summary
+    shows the walkthrough, impact analysis, and positive findings.
+    """
+    parts: list[str] = []
+
+    fixed_issues = [i for i in review.issues if i.status == "fixed"]
+    open_issues  = [i for i in review.issues if i.status == "still_open"]
+    new_issues   = [i for i in review.issues if i.status == "new"]
+    actionable   = len(open_issues) + len(new_issues)
+
+    # ── Header ────────────────────────────────────────────────────────────────
+    parts.append("## 🐍 BugViper AI Code Review")
+    parts.append("")
+    parts.append(f"**PR**: #{pr_number} | **Model**: `{config.review_model}`")
+    parts.append("")
+
+    badges = []
+    if fixed_issues:
+        badges.append(f"✅ {len(fixed_issues)} fixed")
+    if open_issues:
+        badges.append(f"🔁 {len(open_issues)} still open")
+    if new_issues:
+        badges.append(f"🆕 {len(new_issues)} new")
+    if badges:
+        parts.append("  ".join(badges))
+        parts.append("")
+
+    parts.append(f"**Actionable comments: {actionable}**")
+    if inline_posted:
+        skipped_note = f" ({inline_skipped} outside diff)" if inline_skipped else ""
+        parts.append(f"*{inline_posted} inline comment(s) posted directly on the diff{skipped_note}*")
+    parts.append("")
+    parts.append("---")
+    parts.append("")
+
+    # ── Walkthrough ───────────────────────────────────────────────────────────
+    wt_rows = walk_through or []
+    if not wt_rows and files_changed_summary:
+        wt_rows = [f"`{fs.file}` — {fs.what_changed}" for fs in files_changed_summary]
+
+    if wt_rows:
+        parts.append("<details open>")
+        parts.append("<summary>📋 Walkthrough</summary>")
+        parts.append("")
+        parts.append("| File | Change |")
+        parts.append("|------|--------|")
+        for entry in wt_rows:
+            if " — " in entry:
+                fp, summary = entry.split(" — ", 1)
+                fp = fp.strip().strip("`")
+                parts.append(f"| `{fp}` | {summary.strip()} |")
+            else:
+                parts.append(f"| | {entry} |")
+        parts.append("")
+        parts.append("</details>")
+        parts.append("")
+
+    # ── Impact analysis ───────────────────────────────────────────────────────
+    if context:
+        risk_emoji = _RISK_EMOJI.get(context.risk_level, "⚪")
+        parts.append("<details>")
+        parts.append("<summary>📊 Impact Analysis</summary>")
+        parts.append("")
+        parts.append(f"- **Symbols modified**: {len(context.modified_symbols)}")
+        parts.append(f"- **Downstream callers**: {context.total_callers}")
+        parts.append(f"- **Risk level**: {risk_emoji} {context.risk_level.upper()}")
+        parts.append("")
+        parts.append("</details>")
+        parts.append("")
+
+    # ── Fixed ─────────────────────────────────────────────────────────────────
+    if fixed_issues:
+        parts.append(f"### ✅ Fixed Since Last Review ({len(fixed_issues)})")
+        parts.append("")
+        for issue in fixed_issues:
+            parts.append(
+                f"- ~~**{issue.title}**~~ `{issue.file}:{issue.line_start}` — resolved"
+            )
+        parts.append("")
+
+    # ── Positive findings ─────────────────────────────────────────────────────
+    if review.positive_findings:
+        parts.append("<details>")
+        parts.append("<summary>👍 Positive Findings</summary>")
+        parts.append("")
+        for finding in review.positive_findings:
+            parts.append(f"- {finding}")
+        parts.append("")
+        parts.append("</details>")
+        parts.append("")
+
+    if not actionable and not fixed_issues:
+        parts.append("✅ **No issues found. The code looks good!**")
+        parts.append("")
+
+    # ── Footer ────────────────────────────────────────────────────────────────
+    parts.append("---")
+    parts.append("")
+    parts.append(
+        f"*🤖 Generated by [BugViper](https://github.com/Pavel401/BugViper)"
+        f" | Powered by `{config.review_model}`*"
+    )
+
+    return "\n".join(parts)
+
 
 def format_github_comment(
     review: ReconciledReview,
